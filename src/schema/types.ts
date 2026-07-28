@@ -25,12 +25,20 @@ export const ConversationSchema = z.object({
     lastName: z.string(),
     email: z.string(),
   }).nullable(),
+  // Mailbox API 2.0 GET /v2/conversations/{id} returns the primary customer as
+  // `primaryCustomer`; list/search responses may use `customer`. Both are optional.
   customer: z.object({
     id: z.number(),
     firstName: z.string(),
     lastName: z.string(),
     email: z.string(),
-  }),
+  }).optional(),
+  primaryCustomer: z.object({
+    id: z.number(),
+    firstName: z.string().optional(),
+    lastName: z.string().optional(),
+    email: z.string().optional(),
+  }).optional(),
   mailbox: z.object({
     id: z.number(),
     name: z.string(),

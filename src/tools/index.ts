@@ -1843,7 +1843,13 @@ export class ToolHandler {
       customerEmail = input.customer.email;
     } else {
       const conversation = await helpScoutClient.get<Conversation>(`/conversations/${input.conversationId}`);
-      customerEmail = conversation.customer.email;
+      // Mailbox API 2.0 returns the primary customer as `primaryCustomer`; fall back
+      // to `customer` for list/search-shaped payloads.
+      const resolvedEmail = conversation.primaryCustomer?.email ?? conversation.customer?.email;
+      if (!resolvedEmail) {
+        throw new Error(`Could not resolve customer email for conversation ${input.conversationId}; pass customer.email explicitly`);
+      }
+      customerEmail = resolvedEmail;
     }
 
     const body: Record<string, unknown> = {

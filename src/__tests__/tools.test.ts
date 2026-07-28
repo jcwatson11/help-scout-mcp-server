@@ -2042,9 +2042,14 @@ describe('ToolHandler', () => {
     });
 
     describe('createReply', () => {
-      it('should send a reply (not draft by default)', async () => {
+      it('should send a reply (not draft by default) resolving primaryCustomer from the conversation', async () => {
+        // GET /v2/conversations/{id} returns the primary customer as `primaryCustomer`,
+        // not `customer` (Mailbox API 2.0). The fallback must read primaryCustomer.email.
         nock(baseURL)
-          .post('/conversations/123/reply')
+          .get('/conversations/123')
+          .reply(200, { id: 123, primaryCustomer: { email: 'customer@example.com' } });
+        nock(baseURL)
+          .post('/conversations/123/reply', body => body.customer?.email === 'customer@example.com')
           .reply(201);
 
         const request: CallToolRequest = {
@@ -2066,9 +2071,9 @@ describe('ToolHandler', () => {
         expect(response.message).toBe('Reply sent successfully');
       });
 
-      it('should save a reply as draft when draft=true', async () => {
+      it('should use an explicit customer email without fetching the conversation', async () => {
         nock(baseURL)
-          .post('/conversations/123/reply')
+          .post('/conversations/124/reply', body => body.customer?.email === 'explicit@example.com')
           .reply(201);
 
         const request: CallToolRequest = {
@@ -2076,7 +2081,55 @@ describe('ToolHandler', () => {
           params: {
             name: 'createReply',
             arguments: {
-              conversationId: 123,
+              conversationId: 124,
+              text: 'Thank you for reaching out.',
+              customer: { email: 'explicit@example.com' },
+            },
+          },
+        };
+
+        const result = await toolHandler.callTool(request);
+        const textContent = result.content[0] as { type: 'text'; text: string };
+        const response = JSON.parse(textContent.text);
+        expect(response.success).toBe(true);
+      });
+
+      it('should error clearly when the customer email cannot be resolved', async () => {
+        // Conversation with neither primaryCustomer nor customer email.
+        nock(baseURL)
+          .get('/conversations/125')
+          .reply(200, { id: 125 });
+
+        const request: CallToolRequest = {
+          method: 'tools/call',
+          params: {
+            name: 'createReply',
+            arguments: {
+              conversationId: 125,
+              text: 'Thank you for reaching out.',
+            },
+          },
+        };
+
+        const result = await toolHandler.callTool(request);
+        const textContent = result.content[0] as { type: 'text'; text: string };
+        expect(textContent.text).toContain('Could not resolve customer email');
+      });
+
+      it('should save a reply as draft when draft=true', async () => {
+        nock(baseURL)
+          .get('/conversations/126')
+          .reply(200, { id: 126, primaryCustomer: { email: 'customer@example.com' } });
+        nock(baseURL)
+          .post('/conversations/126/reply')
+          .reply(201);
+
+        const request: CallToolRequest = {
+          method: 'tools/call',
+          params: {
+            name: 'createReply',
+            arguments: {
+              conversationId: 126,
               text: 'Draft reply content.',
               draft: true,
             },
