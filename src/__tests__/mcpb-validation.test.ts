@@ -41,9 +41,9 @@ describeIfNotSkipped('MCPB Extension Validation', () => {
 
     it('should have proper server configuration', () => {
       expect(manifest.server.type).toBe('node');
-      expect(manifest.server.entry_point).toBe('build/server/index.js');
+      expect(manifest.server.entry_point).toBe('build/server/cli.js');
       expect(manifest.server.mcp_config.command).toBe('node');
-      expect(manifest.server.mcp_config.args).toContain('${__dirname}/build/server/index.js');
+      expect(manifest.server.mcp_config.args).toContain('${__dirname}/build/server/cli.js');
     });
 
     it('should have OAuth2 authentication configuration', () => {
@@ -58,33 +58,121 @@ describeIfNotSkipped('MCPB Extension Validation', () => {
       expect(userConfig.app_secret.sensitive).toBe(true);
       expect(userConfig.app_id.required).toBe(true);
       expect(userConfig.app_secret.required).toBe(true);
+      expect(userConfig.docs_api_key).toBeDefined();
+      expect(userConfig.docs_api_key.sensitive).toBe(true);
+      expect(userConfig.docs_api_key.required).toBe(false);
 
       // Should NOT have personal access token fields
       expect(userConfig.api_key).toBeUndefined();
       expect(userConfig.personal_access_token).toBeUndefined();
     });
 
-    it('should have all 17 MCP tools declared', () => {
-      expect(manifest.tools).toHaveLength(17);
+    it('should have all 102 MCP tools declared', () => {
+      expect(manifest.tools).toHaveLength(102);
 
       const expectedTools = [
         'searchInboxes',
         'searchConversations',
+        'getConversation',
+        'getConversationV3',
         'getConversationSummary',
         'getThreads',
+        'getThreadsV3',
         'getServerTime',
         'advancedConversationSearch',
         'comprehensiveConversationSearch',
         'listAllInboxes',
+        'getInbox',
         'structuredConversationFilter',
         'getCustomer',
         'listCustomers',
+        'listCustomersV3',
         'searchCustomersByEmail',
         'getCustomerContacts',
+        'getCustomerAddress',
+        'listCustomerEmails',
+        'listCustomerPhones',
+        'listCustomerChats',
+        'listCustomerSocialProfiles',
+        'listCustomerWebsites',
         'getOrganization',
         'listOrganizations',
         'getOrganizationMembers',
-        'getOrganizationConversations'
+        'getOrganizationConversations',
+        'listCustomerProperties',
+        'listOrganizationProperties',
+        'getOrganizationProperty',
+        'listTags',
+        'getTag',
+        'listUsers',
+        'getUser',
+        'listSystemUsers',
+        'getSystemUser',
+        'listUserStatuses',
+        'getUserStatus',
+        'listTeams',
+        'getTeamMembers',
+        'listInboxCustomFields',
+        'listInboxFolders',
+        'getInboxRouting',
+        'listSavedReplies',
+        'getSavedReply',
+        'getOriginalSource',
+        'getOriginalSourceRfc822',
+        'getAttachment',
+        'downloadAttachmentFile',
+        'listWorkflows',
+        'listWebhooks',
+        'getWebhook',
+        'getSatisfactionRating',
+        'getCompanyReport',
+        'getCompanyCustomersHelpedReport',
+        'getCompanyDrilldownReport',
+        'getConversationsReport',
+        'getConversationVolumeByChannelReport',
+        'getConversationBusyTimesReport',
+        'getConversationDrilldownReport',
+        'getConversationFieldDrilldownReport',
+        'getConversationNewReport',
+        'getConversationNewDrilldownReport',
+        'getConversationReceivedMessagesReport',
+        'getDocsReport',
+        'getHappinessReport',
+        'getHappinessRatingsReport',
+        'getProductivityReport',
+        'getProductivityFirstResponseTimeReport',
+        'getProductivityRepliesSentReport',
+        'getProductivityResolutionTimeReport',
+        'getProductivityResolvedReport',
+        'getProductivityResponseTimeReport',
+        'getUserReport',
+        'getUserConversationHistoryReport',
+        'getUserCustomersHelpedReport',
+        'getUserDrilldownReport',
+        'getUserHappinessReport',
+        'getUserRatingsReport',
+        'getUserRepliesReport',
+        'getUserResolutionsReport',
+        'getUserChatReport',
+        'getChatReport',
+        'getEmailReport',
+        'getPhoneReport',
+        'listDocsSites',
+        'getDocsSite',
+        'getDocsSiteRestrictions',
+        'listDocsCollections',
+        'getDocsCollection',
+        'listDocsCategories',
+        'getDocsCategory',
+        'listDocsArticles',
+        'searchDocsArticles',
+        'getDocsArticle',
+        'listDocsRelatedArticles',
+        'listDocsArticleRevisions',
+        'getDocsArticleRevision',
+        'listDocsRedirects',
+        'getDocsRedirect',
+        'findDocsRedirect'
       ];
 
       const toolNames = manifest.tools.map((tool: any) => tool.name);
@@ -120,6 +208,8 @@ describeIfNotSkipped('MCPB Extension Validation', () => {
       expect(env.HELPSCOUT_APP_ID).toBe('${user_config.app_id}');
       expect(env.HELPSCOUT_APP_SECRET).toBe('${user_config.app_secret}');
       expect(env.HELPSCOUT_BASE_URL).toBe('${user_config.base_url}');
+      expect(env.HELPSCOUT_DOCS_API_KEY).toBe('${user_config.docs_api_key}');
+      expect(env.HELPSCOUT_DOCS_BASE_URL).toBe('${user_config.docs_base_url}');
       expect(env.REDACT_MESSAGE_CONTENT).toBe('${user_config.redact_message_content}');
       expect(env.LOG_LEVEL).toBe('${user_config.log_level}');
       expect(env.CACHE_TTL_SECONDS).toBe('${user_config.cache_ttl}');
@@ -129,13 +219,14 @@ describeIfNotSkipped('MCPB Extension Validation', () => {
 
   describe('Build Structure Validation', () => {
     it('should have correct entry point file', () => {
-      const entryPoint = path.join(buildDir, 'server/index.js');
+      const entryPoint = path.join(buildDir, 'server/cli.js');
       expect(fs.existsSync(entryPoint)).toBe(true);
       
       // Verify it's a valid JavaScript file
       const content = fs.readFileSync(entryPoint, 'utf8');
-      expect(content).toContain('export');
-      expect(content.length).toBeGreaterThan(1000); // Should be substantial
+      expect(content).toContain('main');
+      expect(content).toContain('./index.js');
+      expect(content).toContain('Failed to start application');
     });
 
     it('should have production package.json with correct dependencies', () => {
@@ -175,9 +266,19 @@ describeIfNotSkipped('MCPB Extension Validation', () => {
       });
     });
 
+    it('should derive production dependencies from package.json', () => {
+      const rootPackageJson = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8'));
+      const prodPackageJson = JSON.parse(fs.readFileSync(path.join(buildDir, 'package.json'), 'utf8'));
+      const buildScript = fs.readFileSync(path.join(process.cwd(), 'scripts/build-mcpb.js'), 'utf8');
+
+      expect(prodPackageJson.dependencies).toEqual(rootPackageJson.dependencies);
+      expect(buildScript).toContain('dependencies: packageJson.dependencies');
+    });
+
     it('should have all server modules built', () => {
       const serverDir = path.join(buildDir, 'server');
       const expectedFiles = [
+        'cli.js',
         'index.js',
         'tools/index.js',
         'resources/index.js', 
@@ -185,6 +286,7 @@ describeIfNotSkipped('MCPB Extension Validation', () => {
         'schema/types.js',
         'utils/config.js',
         'utils/helpscout-client.js',
+        'utils/helpscout-docs-client.js',
         'utils/logger.js',
         'utils/cache.js',
         'utils/mcp-errors.js'
@@ -215,6 +317,14 @@ describeIfNotSkipped('MCPB Extension Validation', () => {
       expect(content).toContain('cache'); // Uses cache module instead of direct LRUCache import
     });
 
+    it('should have docs client that imports axios', () => {
+      const clientPath = path.join(buildDir, 'server/utils/helpscout-docs-client.js');
+      const content = fs.readFileSync(clientPath, 'utf8');
+
+      expect(content).toContain('axios');
+      expect(content).toContain('HELPSCOUT_DOCS_API_KEY');
+    });
+
     it('should have tools that export all expected functions', () => {
       const toolsPath = path.join(buildDir, 'server/tools/index.js');
       const content = fs.readFileSync(toolsPath, 'utf8');
@@ -222,19 +332,38 @@ describeIfNotSkipped('MCPB Extension Validation', () => {
       const expectedExports = [
         'searchInboxes',
         'searchConversations',
+        'getConversation',
+        'getConversationV3',
         'getConversationSummary', 
         'getThreads',
+        'getThreadsV3',
         'getServerTime',
         'advancedConversationSearch',
         'comprehensiveConversationSearch',
+        'getInbox',
         'getCustomer',
         'listCustomers',
+        'listCustomersV3',
         'searchCustomersByEmail',
         'getCustomerContacts',
+        'getCustomerAddress',
+        'listCustomerEmails',
+        'listCustomerPhones',
+        'listCustomerChats',
+        'listCustomerSocialProfiles',
+        'listCustomerWebsites',
         'getOrganization',
         'listOrganizations',
         'getOrganizationMembers',
-        'getOrganizationConversations'
+        'getOrganizationConversations',
+        'listSystemUsers',
+        'getSystemUser',
+        'listUserStatuses',
+        'getUserStatus',
+        'getInboxRouting',
+        'getOriginalSourceRfc822',
+        'downloadAttachmentFile',
+        'getDocsSiteRestrictions'
       ];
 
       expectedExports.forEach(exportName => {

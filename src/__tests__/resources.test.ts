@@ -91,6 +91,7 @@ describe('ResourceHandler', () => {
       });
 
       it('should handle pagination parameters', async () => {
+        const requestedUri = 'helpscout://inboxes?page=2&size=10';
         const mockResponse = {
           _embedded: { mailboxes: [] },
           page: { size: 10, totalElements: 0 }
@@ -101,13 +102,23 @@ describe('ResourceHandler', () => {
           .query({ page: 2, size: 10 })
           .reply(200, mockResponse);
 
-        const resource = await resourceHandler.handleResource('helpscout://inboxes?page=2&size=10');
-        expect(resource).toBeDefined();
+        const resource = await resourceHandler.handleResource(requestedUri);
+        expect(resource.uri).toBe(requestedUri);
       });
 
       it('should reject invalid size parameters above Help Scout limits', async () => {
         await expect(
           resourceHandler.handleResource('helpscout://inboxes?size=51')
+        ).rejects.toThrow('size must be a number between 1 and 50');
+      });
+
+      it('should reject partially numeric pagination parameters', async () => {
+        await expect(
+          resourceHandler.handleResource('helpscout://inboxes?page=1abc')
+        ).rejects.toThrow('page must be a number between 1 and 10000');
+
+        await expect(
+          resourceHandler.handleResource('helpscout://inboxes?size=10junk')
         ).rejects.toThrow('size must be a number between 1 and 50');
       });
     });
@@ -162,10 +173,11 @@ describe('ResourceHandler', () => {
           'helpscout://conversations?status=active&mailbox=123'
         );
         expect(resource).toBeDefined();
-        expect(resource.uri).toBe('helpscout://conversations');
+        expect(resource.uri).toBe('helpscout://conversations?status=active&mailbox=123');
       });
 
       it('should handle pagination parameters', async () => {
+        const requestedUri = 'helpscout://conversations?page=2&size=25';
         const mockResponse = {
           _embedded: { conversations: [] },
           page: { size: 25, totalElements: 0, number: 2 },
@@ -177,10 +189,9 @@ describe('ResourceHandler', () => {
           .query({ page: 2, size: 25 })
           .reply(200, mockResponse);
 
-        const resource = await resourceHandler.handleResource(
-          'helpscout://conversations?page=2&size=25'
-        );
+        const resource = await resourceHandler.handleResource(requestedUri);
         
+        expect(resource.uri).toBe(requestedUri);
         const data = JSON.parse(resource.text as string);
         expect(data.pagination.number).toBe(2);
         expect(data.pagination.size).toBe(25);
@@ -189,6 +200,12 @@ describe('ResourceHandler', () => {
       it('should reject invalid page parameters', async () => {
         await expect(
           resourceHandler.handleResource('helpscout://conversations?page=0')
+        ).rejects.toThrow('page must be a number between 1 and 10000');
+      });
+
+      it('should reject fractional page parameters', async () => {
+        await expect(
+          resourceHandler.handleResource('helpscout://conversations?page=1.5')
         ).rejects.toThrow('page must be a number between 1 and 10000');
       });
 
@@ -256,6 +273,7 @@ describe('ResourceHandler', () => {
       });
 
       it('should handle pagination parameters for threads', async () => {
+        const requestedUri = 'helpscout://threads?conversationId=123&page=2&size=25';
         const mockResponse = {
           _embedded: {
             threads: []
@@ -269,10 +287,9 @@ describe('ResourceHandler', () => {
           .query({ page: 2, size: 25 })
           .reply(200, mockResponse);
 
-        const resource = await resourceHandler.handleResource(
-          'helpscout://threads?conversationId=123&page=2&size=25'
-        );
+        const resource = await resourceHandler.handleResource(requestedUri);
         
+        expect(resource.uri).toBe(requestedUri);
         const data = JSON.parse(resource.text as string);
         expect(data.pagination.number).toBe(2);
         expect(data.pagination.size).toBe(25);
@@ -284,9 +301,9 @@ describe('ResourceHandler', () => {
         ).rejects.toThrow('conversationId parameter is required');
       });
 
-      it('should redact thread bodies when allowPii is false', async () => {
-        const originalAllowPii = config.security.allowPii;
-        config.security.allowPii = false;
+      it('should hide thread bodies when message content redaction is enabled', async () => {
+        const originalRedactMessageContent = config.security.redactMessageContent;
+        config.security.redactMessageContent = true;
 
         try {
           const mockResponse = {
@@ -295,7 +312,7 @@ describe('ResourceHandler', () => {
                 {
                   id: 1,
                   type: 'customer',
-                  body: 'Sensitive customer message with PII',
+                  body: 'Customer message with account details',
                   createdAt: '2023-01-01T00:00:00Z'
                 },
                 {
@@ -326,13 +343,13 @@ describe('ResourceHandler', () => {
           expect(data.threads[0].id).toBe(1);
           expect(data.threads[0].type).toBe('customer');
         } finally {
-          config.security.allowPii = originalAllowPii;
+          config.security.redactMessageContent = originalRedactMessageContent;
         }
       });
 
-      it('should show thread bodies when allowPii is true', async () => {
-        const originalAllowPii = config.security.allowPii;
-        config.security.allowPii = true;
+      it('should show thread bodies when message content redaction is disabled', async () => {
+        const originalRedactMessageContent = config.security.redactMessageContent;
+        config.security.redactMessageContent = false;
 
         try {
           const mockResponse = {
@@ -362,7 +379,7 @@ describe('ResourceHandler', () => {
           const data = JSON.parse(resource.text as string);
           expect(data.threads[0].body).toBe('Visible customer message');
         } finally {
-          config.security.allowPii = originalAllowPii;
+          config.security.redactMessageContent = originalRedactMessageContent;
         }
       });
 
@@ -389,7 +406,7 @@ describe('ResourceHandler', () => {
     });
 
     describe('helpscout://clock', () => {
-      it('should return server time', async () => {
+      it('should return MCP host time', async () => {
         const resource = await resourceHandler.handleResource('helpscout://clock');
 
         expect(resource.uri).toBe('helpscout://clock');
@@ -398,8 +415,21 @@ describe('ResourceHandler', () => {
         const data = JSON.parse(resource.text as string);
         expect(data).toHaveProperty('isoTime');
         expect(data).toHaveProperty('unixTime');
+        expect(data).toHaveProperty('source', 'mcp_host_clock');
+        expect(data.note).toContain('local MCP host process clock');
         expect(typeof data.isoTime).toBe('string');
         expect(typeof data.unixTime).toBe('number');
+      });
+
+      it('should preserve clock request URI while ignoring parameters that do not apply', async () => {
+        const requestedUri = 'helpscout://clock?page=abc&size=too-large';
+        const resource = await resourceHandler.handleResource(requestedUri);
+
+        expect(resource.uri).toBe(requestedUri);
+        const data = JSON.parse(resource.text as string);
+        expect(data).toHaveProperty('isoTime');
+        expect(data).toHaveProperty('unixTime');
+        expect(data).toHaveProperty('source', 'mcp_host_clock');
       });
     });
 
@@ -420,7 +450,7 @@ describe('ResourceHandler', () => {
         nock(baseURL)
           .get('/mailboxes')
           .query({ page: 1, size: 50 })
-          .reply(500, { message: 'Internal Server Error' });
+          .reply(400, { message: 'Bad Request' });
 
         await expect(
           resourceHandler.handleResource('helpscout://inboxes')

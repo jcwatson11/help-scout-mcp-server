@@ -1,5 +1,6 @@
 import { HelpScoutClient } from '../utils/helpscout-client.js';
 import nock from 'nock';
+import { cache } from '../utils/cache.js';
 
 // Mock logger to reduce test output noise
 jest.mock('../utils/logger.js', () => ({
@@ -25,6 +26,7 @@ describe('HelpScout Client - Connection Pooling', () => {
     nock.cleanAll();
     nock.restore();
     nock.activate();
+    cache.clear();
     
     // Mock OAuth2 authentication endpoint
     nock(baseURL)
@@ -42,6 +44,7 @@ describe('HelpScout Client - Connection Pooling', () => {
       await client.closePool();
     }
     nock.cleanAll();
+    cache.clear();
   });
 
   describe('Connection Pool Configuration', () => {
@@ -104,9 +107,88 @@ describe('HelpScout Client - Connection Pooling', () => {
       });
     });
 
+    it('should count pooled sockets and requests, not host buckets', () => {
+      const axiosClient = (client as any).client;
+      const socket = () => ({ destroy: jest.fn() });
+
+      axiosClient.defaults.httpAgent.sockets = {
+        'api.helpscout.net:80:': [socket(), socket()],
+      };
+      axiosClient.defaults.httpAgent.freeSockets = {
+        'api.helpscout.net:80:': [socket()],
+      };
+      axiosClient.defaults.httpAgent.requests = {
+        'api.helpscout.net:80:': [{}, {}, {}],
+      };
+      axiosClient.defaults.httpsAgent.sockets = {
+        'api.helpscout.net:443:': [socket(), socket(), socket()],
+      };
+      axiosClient.defaults.httpsAgent.freeSockets = {
+        'api.helpscout.net:443:': [socket(), socket()],
+      };
+      axiosClient.defaults.httpsAgent.requests = {
+        'api.helpscout.net:443:': [{}],
+      };
+
+      expect(client.getPoolStats()).toEqual({
+        http: {
+          sockets: 2,
+          freeSockets: 1,
+          pending: 3,
+        },
+        https: {
+          sockets: 3,
+          freeSockets: 2,
+          pending: 1,
+        },
+      });
+    });
+
     it('should clear idle connections', () => {
       // This test verifies the method exists and can be called
       expect(() => client.clearIdleConnections()).not.toThrow();
+    });
+
+    it('should preserve custom pool settings when clearing idle connections', () => {
+      const axiosClientBefore = (client as any).client;
+      const httpAgentBefore = axiosClientBefore.defaults.httpAgent;
+      const httpsAgentBefore = axiosClientBefore.defaults.httpsAgent;
+      expect(axiosClientBefore.defaults.httpAgent.options.maxSockets).toBe(10);
+      expect(axiosClientBefore.defaults.httpAgent.options.maxFreeSockets).toBe(3);
+      expect(axiosClientBefore.defaults.httpAgent.options.timeout).toBe(10000);
+      expect(axiosClientBefore.defaults.httpAgent.options.keepAliveMsecs).toBe(200);
+
+      client.clearIdleConnections();
+
+      const axiosClientAfter = (client as any).client;
+      expect(axiosClientAfter.defaults.httpAgent).toBe(httpAgentBefore);
+      expect(axiosClientAfter.defaults.httpsAgent).toBe(httpsAgentBefore);
+      expect(axiosClientAfter.defaults.httpAgent.options.maxSockets).toBe(10);
+      expect(axiosClientAfter.defaults.httpAgent.options.maxFreeSockets).toBe(3);
+      expect(axiosClientAfter.defaults.httpAgent.options.timeout).toBe(10000);
+      expect(axiosClientAfter.defaults.httpAgent.options.keepAliveMsecs).toBe(200);
+      expect(axiosClientAfter.defaults.httpsAgent.options.maxSockets).toBe(10);
+      expect(axiosClientAfter.defaults.httpsAgent.options.maxFreeSockets).toBe(3);
+      expect(axiosClientAfter.defaults.httpsAgent.options.timeout).toBe(10000);
+      expect(axiosClientAfter.defaults.httpsAgent.options.keepAliveMsecs).toBe(200);
+    });
+
+    it('should destroy free sockets without destroying active sockets', () => {
+      const axiosClient = (client as any).client;
+      const freeSocket = { destroy: jest.fn() };
+      const activeSocket = { destroy: jest.fn() };
+
+      axiosClient.defaults.httpsAgent.freeSockets = { 'api.helpscout.net:443:': [freeSocket] };
+      axiosClient.defaults.httpsAgent.sockets = { 'api.helpscout.net:443:': [activeSocket] };
+
+      client.clearIdleConnections();
+
+      expect(freeSocket.destroy).toHaveBeenCalledTimes(1);
+      expect(activeSocket.destroy).not.toHaveBeenCalled();
+      expect(axiosClient.defaults.httpsAgent.freeSockets).toEqual({});
+      expect(axiosClient.defaults.httpsAgent.sockets).toEqual({
+        'api.helpscout.net:443:': [activeSocket],
+      });
     });
 
     it('should log pool status', () => {
@@ -178,6 +260,64 @@ describe('HelpScout Client - Connection Pooling', () => {
       
       const stats = client.getPoolStats();
       expect(stats).toBeDefined();
+    });
+
+    it('should authenticate against the configured base URL', async () => {
+      jest.resetModules();
+      jest.doMock('../utils/config.js', () => ({
+        config: {
+          helpscout: {
+            apiKey: '',
+            clientId: 'custom-client-id',
+            clientSecret: 'custom-client-secret',
+            baseUrl: 'https://helpscout-proxy.test/v2/',
+          },
+          cache: { ttlSeconds: 300, maxSize: 10000 },
+          logging: { level: 'error' },
+          security: { redactMessageContent: false },
+          connectionPool: {
+            maxSockets: 5,
+            maxFreeSockets: 2,
+            timeout: 30000,
+            keepAlive: true,
+            keepAliveMsecs: 1000,
+          },
+        },
+        validateConfig: jest.fn(),
+      }));
+      jest.doMock('../utils/logger.js', () => ({
+        logger: {
+          info: jest.fn(),
+          error: jest.fn(),
+          debug: jest.fn(),
+          warn: jest.fn(),
+        },
+      }));
+
+      const { HelpScoutClient: IsolatedHelpScoutClient } = await import('../utils/helpscout-client.js');
+      const isolatedClient = new IsolatedHelpScoutClient();
+
+      const authScope = nock('https://helpscout-proxy.test')
+        .post('/v2/oauth2/token')
+        .reply(200, {
+          access_token: 'proxy-access-token',
+          token_type: 'Bearer',
+          expires_in: 3600,
+        });
+
+      const apiScope = nock('https://helpscout-proxy.test')
+        .get('/v2/mailboxes')
+        .query({ page: 1, size: 1 })
+        .matchHeader('authorization', 'Bearer proxy-access-token')
+        .reply(200, { _embedded: { mailboxes: [] } });
+
+      await isolatedClient.get('/mailboxes', { page: 1, size: 1 });
+      await isolatedClient.closePool();
+
+      expect(authScope.isDone()).toBe(true);
+      expect(apiScope.isDone()).toBe(true);
+      jest.dontMock('../utils/config.js');
+      jest.dontMock('../utils/logger.js');
     });
   });
 

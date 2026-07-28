@@ -2,7 +2,7 @@
 
 [![npm version](https://badge.fury.io/js/help-scout-mcp-server.svg)](https://badge.fury.io/js/help-scout-mcp-server) [![Docker](https://img.shields.io/docker/v/drewburchfield/help-scout-mcp-server?logo=docker&label=docker)](https://hub.docker.com/r/drewburchfield/help-scout-mcp-server) [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/drewburchfield/help-scout-mcp-server) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-An [MCP server](https://modelcontextprotocol.io) that gives AI assistants direct access to your Help Scout inboxes, conversations, customers, organizations, and threads. Search tickets, pull customer and account context, spot patterns, and get answers without leaving your editor or chat window.
+An [MCP server](https://modelcontextprotocol.io) that gives AI assistants direct access to your Help Scout inboxes, conversations, customers, organizations, threads, and Docs knowledge base. Search tickets, pull customer and account context, inspect articles, spot patterns, and get answers without leaving your editor or chat window.
 
 Built by a Help Scout customer who wanted to give his support team superpowers. If you handle customer conversations in Help Scout and want AI to help you work faster, this is for you.
 
@@ -11,10 +11,13 @@ Built by a Help Scout customer who wanted to give his support team superpowers. 
 - **Search conversations** by keyword, date range, status, tag, email domain, or ticket number
 - **Look up customers** by name, advanced query syntax, or exact email address
 - **Explore organizations** with direct customer and conversation traversal
+- **Inspect conversation detail** with raw ticket metadata, summaries, full threads, attachments, and original source
 - **Pull full thread history** into context before drafting a reply
 - **Get conversation summaries** with the original customer message and latest staff response
+- **Search and retrieve Docs articles** from the separate Help Scout Docs API
+- **Pull Help Scout reports and metadata** for company, conversations, Docs, channels, productivity, happiness, users, teams, system users, statuses, routing, and webhooks
 - **Monitor inbox activity** across multiple inboxes with a single query
-- **Stay compliant** with optional PII redaction and scoped inbox access
+- **Reduce message payloads** with optional message content redaction and scoped inbox access
 
 ## Quick Start
 
@@ -88,7 +91,15 @@ docker run -e HELPSCOUT_APP_ID="your-app-id" \
 
 Alternative names `HELPSCOUT_CLIENT_ID` / `HELPSCOUT_CLIENT_SECRET` and legacy `HELPSCOUT_API_KEY` are also supported.
 
+Docs knowledge base tools use Help Scout Docs API v1, which is separate from the Mailbox API. Set `HELPSCOUT_DOCS_API_KEY` only if you want to use `listDocs*`, `searchDocsArticles`, `getDocsArticle`, or redirect tools.
+
 ## Tools
+
+For the MCP compatibility contract and roadmap, see:
+
+- [MCP tool contract](guides/architecture/mcp-tool-contract.md)
+- [MCP vs CLI boundary](guides/architecture/mcp-vs-cli.md)
+- [MCP tool surface roadmap](guides/roadmap/mcp-tool-surface.md)
 
 ### Which tool should I use?
 
@@ -106,9 +117,13 @@ Alternative names `HELPSCOUT_CLIENT_ID` / `HELPSCOUT_CLIENT_SECRET` and legacy `
 | Inspect an organization | `getOrganization` | "Open organization 456" |
 | List customers in an organization | `getOrganizationMembers` | "Who belongs to organization 456?" |
 | List organization conversations | `getOrganizationConversations` | "Show support history for organization 456" |
+| Raw conversation detail | `getConversation` | "Open conversation 12345 with full metadata" |
 | Quick conversation overview | `getConversationSummary` | "Summarize this conversation" |
 | Full message history | `getThreads` | "Show me the complete thread" |
-| Current server time | `getServerTime` | Used for time-relative searches |
+| Inspect routing state | `getInboxRouting` | "Show routing for inbox 359402" |
+| Search Docs articles | `searchDocsArticles` | "Find knowledge base articles about refunds" |
+| Retrieve a Docs article | `getDocsArticle` | "Open Docs article 123" |
+| Current MCP host time | `getServerTime` | Used for time-relative searches |
 
 Inboxes are auto-discovered when the server connects. AI agents get inbox IDs in their instructions automatically, so no lookup step is needed.
 
@@ -120,7 +135,9 @@ Inboxes are auto-discovered when the server connects. AI agents get inbox IDs in
 | `HELPSCOUT_APP_SECRET` | App Secret from Help Scout My Apps | Required |
 | `HELPSCOUT_DEFAULT_INBOX_ID` | Scope searches to a specific inbox | None (all inboxes) |
 | `HELPSCOUT_BASE_URL` | Help Scout API endpoint | `https://api.helpscout.net/v2/` |
-| `REDACT_MESSAGE_CONTENT` | Hide message bodies in responses | `false` |
+| `HELPSCOUT_DOCS_API_KEY` | Optional Docs API key for knowledge base tools | None |
+| `HELPSCOUT_DOCS_BASE_URL` | Help Scout Docs API endpoint | `https://docsapi.helpscout.net/v1/` |
+| `REDACT_MESSAGE_CONTENT` | Replace message bodies with placeholders | `false` |
 | `CACHE_TTL_SECONDS` | Cache duration for API responses | `300` |
 | `LOG_LEVEL` | Logging verbosity (`error`, `warn`, `info`, `debug`) | `info` |
 
@@ -137,10 +154,9 @@ Works with any [MCP-compatible](https://modelcontextprotocol.io) client:
 
 ## Security and Privacy
 
-Built with compliance-minded teams in mind:
+Built with security-minded teams in mind:
 
-- **Optional PII redaction.** Message bodies are included by default. Set `REDACT_MESSAGE_CONTENT=true` to hide them for stricter compliance requirements.
-- **Customer and organization redaction.** Customer contact fields and organization contact/location fields are also redacted when message-content redaction is enabled.
+- **Optional message content redaction.** Message bodies are included by default. Set `REDACT_MESSAGE_CONTENT=true` to replace conversation and thread bodies with placeholders for lower-context analysis. This is not a compliance boundary and does not remove all customer identifiers.
 - **Secure authentication.** OAuth2 Client Credentials with automatic token refresh.
 - **Rate limit handling.** Automatic retry with exponential backoff on 429 responses.
 - **Scoped access.** Optional default inbox configuration limits what the AI can search.

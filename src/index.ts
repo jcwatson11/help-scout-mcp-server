@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
@@ -17,6 +16,15 @@ import { resourceHandler } from './resources/index.js';
 import { toolHandler } from './tools/index.js';
 import { promptHandler } from './prompts/index.js';
 import type { Inbox } from './schema/types.js';
+import { createMcpResourceError } from './utils/mcp-errors.js';
+
+function getArgumentKeys(args: unknown): string[] {
+  return args && typeof args === 'object' ? Object.keys(args as Record<string, unknown>) : [];
+}
+
+function formatInstructionValue(value: unknown): string {
+  return JSON.stringify(value == null ? '' : String(value));
+}
 
 export class HelpScoutMCPServer {
   private server: Server;
@@ -66,14 +74,23 @@ export class HelpScoutMCPServer {
       // Validate config before attempting API calls
       validateConfig();
 
-      const response = await helpScoutClient.get<PaginatedResponse<Inbox>>('/mailboxes', {
-        page: 1,
-        size: 100,
-      });
-      const inboxes = response._embedded?.mailboxes || [];
+      const inboxes: Inbox[] = [];
+      let page = 1;
+      let totalPages = 1;
+
+      do {
+        const response = await helpScoutClient.get<PaginatedResponse<Inbox>>('/mailboxes', {
+          page,
+          size: 100,
+        });
+
+        inboxes.push(...(response._embedded?.mailboxes || []));
+        totalPages = response.page?.totalPages ?? page;
+        page++;
+      } while (page <= totalPages);
 
       const inboxList = inboxes.map(inbox =>
-        `  - "${inbox.name}" (ID: ${inbox.id})`
+        `  - ${formatInstructionValue(inbox.name)} (ID: ${formatInstructionValue(inbox.id)})`
       ).join('\n');
 
       const instructions = `Help Scout MCP Server - Search and retrieve Help Scout inbox, conversation, customer, and organization data.
@@ -89,20 +106,25 @@ ${inboxes.length > 0 ? inboxList : '  No inboxes found - check API credentials'}
 | Complex filters (email domain, multiple tags) | advancedConversationSearch |
 | Lookup by ticket number (#12345) | structuredConversationFilter |
 | Browse customers by name or query | listCustomers |
+| Browse customers with v3 cursor filters | listCustomersV3 |
 | Find a customer by email | searchCustomersByEmail |
 | Get a full customer profile | getCustomer |
 | Get customer contact channels | getCustomerContacts |
+| Get one customer contact sub-resource | getCustomerAddress/listCustomerEmails/listCustomerPhones/listCustomerChats/listCustomerSocialProfiles/listCustomerWebsites |
 | Browse organizations | listOrganizations |
 | Get an organization profile | getOrganization |
 | See everyone in an organization | getOrganizationMembers |
 | See all conversations for an organization | getOrganizationConversations |
+| Get raw conversation metadata | getConversation |
 | Get full conversation thread | getThreads |
 | Quick conversation preview | getConversationSummary |
+| Get inbox metadata | getInbox |
+| Inspect inbox routing state | getInboxRouting |
 
 ## Workflow Patterns
-- **Ticket investigation**: searchConversations → getConversationSummary → getThreads
+- **Ticket investigation**: searchConversations → getConversation/getConversationSummary → getThreads
 - **Keyword research**: comprehensiveConversationSearch → getThreads for details
-- **Customer history**: searchCustomersByEmail → getCustomer → structuredConversationFilter/getThreads
+- **Customer history**: listCustomersV3/searchCustomersByEmail → getCustomer → structuredConversationFilter/getThreads
 - **Account review**: listOrganizations/getOrganization → getOrganizationMembers → getOrganizationConversations
 
 ## Notes
@@ -119,7 +141,7 @@ ${inboxes.length > 0 ? inboxList : '  No inboxes found - check API credentials'}
       const safeError = rawError
         .replace(/[A-Za-z0-9_-]{20,}/g, '[REDACTED]') // Redact long alphanumeric strings (tokens/keys)
         .replace(/\/[^\s]+/g, '[PATH]'); // Redact file paths
-      logger.warn('Inbox auto-discovery failed, using fallback instructions', { error: rawError });
+      logger.warn('Inbox auto-discovery failed, using fallback instructions', { error: safeError });
 
       return {
         instructions: `Help Scout MCP Server - Read-only access to conversations.
@@ -146,10 +168,21 @@ Note: Inbox auto-discovery failed (${safeError}). Use listAllInboxes tool to see
 
     this.server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
       logger.debug('Reading resource', { uri: request.params.uri });
-      const resource = await resourceHandler.handleResource(request.params.uri);
-      return {
-        contents: [resource],
-      };
+      try {
+        const resource = await resourceHandler.handleResource(request.params.uri);
+        return {
+          contents: [resource],
+        };
+      } catch (error) {
+        return {
+          contents: [
+            createMcpResourceError(error, {
+              resourceUri: request.params.uri,
+              requestId: Math.random().toString(36).substring(7),
+            }),
+          ],
+        };
+      }
     });
 
     // Tools
@@ -168,9 +201,25 @@ Note: Inbox auto-discovery failed (${safeError}). Use listAllInboxes tool to see
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       logger.debug('Calling tool', { 
         name: request.params.name, 
-        arguments: request.params.arguments 
+        argumentKeys: getArgumentKeys(request.params.arguments),
       });
-      return await toolHandler.callTool(request);
+      const meta = request.params._meta as { userQuery?: unknown } | undefined;
+      const userQuery = typeof meta?.userQuery === 'string' && meta.userQuery.trim()
+        ? meta.userQuery
+        : undefined;
+      const requestForTool = userQuery
+        ? {
+          ...request,
+          params: {
+            ...request.params,
+            arguments: {
+              ...(request.params.arguments || {}),
+              __userQuery: userQuery,
+            },
+          },
+        }
+        : request;
+      return await toolHandler.callTool(requestForTool);
     });
 
     // Prompts
@@ -189,7 +238,7 @@ Note: Inbox auto-discovery failed (${safeError}). Use listAllInboxes tool to see
     this.server.setRequestHandler(GetPromptRequestSchema, async (request) => {
       logger.debug('Getting prompt', { 
         name: request.params.name, 
-        arguments: request.params.arguments 
+        argumentKeys: getArgumentKeys(request.params.arguments),
       });
       return await promptHandler.getPrompt(request);
     });
@@ -232,8 +281,7 @@ Note: Inbox auto-discovery failed (${safeError}). Use listAllInboxes tool to see
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       logger.error('Failed to start server', { error: errorMessage });
-      console.error('MCP Server startup failed:', errorMessage);
-      process.exit(1);
+      throw error;
     }
   }
 
@@ -267,7 +315,7 @@ async function shutdown(server: HelpScoutMCPServer): Promise<void> {
 }
 
 // Main execution
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   const server = await HelpScoutMCPServer.create();
   
   // Setup signal handlers for graceful shutdown
@@ -296,18 +344,4 @@ async function main(): Promise<void> {
     console.error('Failed to start server:', error);
     process.exit(1);
   }
-}
-
-// Start the server when this module is executed directly (either via `node dist/index.js` or via an npm bin stub such as `npx help-scout-mcp-server`)
-// Use a simpler approach that Jest can handle - check if we're in a test environment
-const isTestEnvironment = process.env.NODE_ENV === 'test' || process.env.JEST_WORKER_ID !== undefined;
-const invokedFromCLI = !isTestEnvironment;
-
-if (invokedFromCLI) {
-  main().catch((error) => {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    logger.error('Failed to start application', { error: errorMessage });
-    console.error('Application startup failed:', errorMessage);
-    process.exit(1);
-  });
 }

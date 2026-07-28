@@ -120,9 +120,6 @@ describe('Complete User Workflows - Integration Tests', () => {
 
       // Execute the complete workflow
       
-      // User input: "find urgent tickets in the support inbox"
-      toolHandler.setUserContext('find urgent tickets in the support inbox');
-
       // Step 1: Search for "support" inbox
       const inboxSearchRequest: CallToolRequest = {
         method: 'tools/call',
@@ -147,6 +144,7 @@ describe('Complete User Workflows - Integration Tests', () => {
           name: 'searchConversations',
           arguments: {
             query: 'urgent',
+            __userQuery: 'find urgent tickets in the support inbox',
             inboxId: supportInboxId,
             status: 'active'
           }
@@ -333,8 +331,6 @@ describe('Complete User Workflows - Integration Tests', () => {
     it('should guide users through correct workflow when they skip steps', async () => {
       // SCENARIO: User tries to search without getting inbox ID first
       
-      toolHandler.setUserContext('search conversations in the billing inbox for overdue payments');
-
       // User incorrectly tries to search without inbox ID
       const incorrectSearchRequest: CallToolRequest = {
         method: 'tools/call',
@@ -342,6 +338,7 @@ describe('Complete User Workflows - Integration Tests', () => {
           name: 'searchConversations',
           arguments: {
             query: 'overdue',
+            __userQuery: 'search conversations in the billing inbox for overdue payments',
             // Missing inboxId - user mentioned "billing inbox" but didn't search for it first
           }
         }
@@ -352,8 +349,9 @@ describe('Complete User Workflows - Integration Tests', () => {
 
       // Should get API constraint validation error
       expect(errorResponse.error).toBe('API Constraint Validation Failed');
-      expect(errorResponse.details.requiredPrerequisites).toContain('searchInboxes');
-      expect(errorResponse.details.suggestions[0]).toContain('REQUIRED: Call searchInboxes first');
+      expect(errorResponse.details.requiredPrerequisites).toContain('listAllInboxes');
+      expect(errorResponse.details.suggestions[0]).toContain('server instructions');
+      expect(errorResponse.details.suggestions[0]).toContain('listAllInboxes');
 
       // Verify the error provides actionable guidance
       expect(errorResponse.helpScoutAPIRequirements.message).toContain('Help Scout API constraints');
@@ -469,7 +467,7 @@ describe('Complete User Workflows - Integration Tests', () => {
       const summaryResponse = JSON.parse((summaryResult.content[0] as any).text);
 
       expect(summaryResponse.conversation.subject).toBe('New escalation - urgent');
-      // Verify message bodies are present (PII redaction tested separately in dedicated tests)
+      // Verify message bodies are present (message content redaction is tested separately)
       expect(summaryResponse.firstCustomerMessage.body).toBeDefined();
       expect(summaryResponse.latestStaffReply.body).toBeDefined();
 

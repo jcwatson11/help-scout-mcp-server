@@ -14,16 +14,17 @@ describe('HelpScoutAPIConstraints', () => {
 
       expect(result.isValid).toBe(false);
       expect(result.errors).toContain('User mentioned an inbox by name but no inboxId provided');
-      expect(result.requiredPrerequisites).toContain('searchInboxes');
-      expect(result.suggestions[0]).toContain('REQUIRED: Call searchInboxes first');
+      expect(result.requiredPrerequisites).toContain('listAllInboxes');
+      expect(result.suggestions[0]).toContain('server instructions');
+      expect(result.suggestions[0]).toContain('listAllInboxes');
     });
 
-    it('should allow searchConversations with valid inboxId after searchInboxes', () => {
+    it('should allow searchConversations with valid inboxId after listAllInboxes', () => {
       const context: ToolCallContext = {
         toolName: 'searchConversations',
         arguments: { query: 'urgent', inboxId: '12345' },
         userQuery: 'search for urgent messages in the support inbox',
-        previousCalls: ['searchInboxes']
+        previousCalls: ['listAllInboxes']
       };
 
       const result = HelpScoutAPIConstraints.validateToolCall(context);
@@ -60,18 +61,48 @@ describe('HelpScoutAPIConstraints', () => {
       expect(result.errors).toContain('Invalid conversation ID format');
     });
 
+    it('should validate getThreads conversation ID format', () => {
+      const context: ToolCallContext = {
+        toolName: 'getThreads',
+        arguments: { conversationId: 'invalid-id' },
+        userQuery: '',
+        previousCalls: []
+      };
+
+      const result = HelpScoutAPIConstraints.validateToolCall(context);
+
+      expect(result.isValid).toBe(false);
+      expect(result.errors).toContain('Invalid conversation ID format');
+      expect(result.suggestions).toContain('Conversation IDs should be numeric strings');
+    });
+
     it('should suggest comprehensiveConversationSearch for searches without status', () => {
       const context: ToolCallContext = {
         toolName: 'searchConversations',
         arguments: { query: 'urgent refund' },
-        userQuery: 'find messages about urgent refunds',  // Use words not in inbox keywords
+        userQuery: 'find messages about urgent refunds',
         previousCalls: []
       };
 
       const result = HelpScoutAPIConstraints.validateToolCall(context);
 
       expect(result.isValid).toBe(true);
-      expect(result.suggestions.some(s => s.includes('comprehensiveConversationSearch for better results'))).toBe(true);
+      expect(result.suggestions.some(s => s.includes('comprehensiveConversationSearch'))).toBe(true);
+    });
+
+    it('should allow global searches that contain generic support topics', () => {
+      const context: ToolCallContext = {
+        toolName: 'searchConversations',
+        arguments: { query: 'billing issues' },
+        userQuery: 'find all conversations about billing issues in support history',
+        previousCalls: []
+      };
+
+      const result = HelpScoutAPIConstraints.validateToolCall(context);
+
+      expect(result.isValid).toBe(true);
+      expect(result.errors).not.toContain('User mentioned an inbox by name but no inboxId provided');
+      expect(result.requiredPrerequisites).toBeUndefined();
     });
 
     it('should validate comprehensiveConversationSearch searchTerms', () => {
@@ -87,6 +118,21 @@ describe('HelpScoutAPIConstraints', () => {
       expect(result.isValid).toBe(false);
       expect(result.errors).toContain('searchTerms is required and must be a non-empty array');
     });
+
+    it('should block comprehensiveConversationSearch when an inbox is named without inboxId', () => {
+      const context: ToolCallContext = {
+        toolName: 'comprehensiveConversationSearch',
+        arguments: { searchTerms: ['urgent'] },
+        userQuery: 'find urgent conversations in the support inbox',
+        previousCalls: []
+      };
+
+      const result = HelpScoutAPIConstraints.validateToolCall(context);
+
+      expect(result.isValid).toBe(false);
+      expect(result.errors).toContain('User mentioned an inbox by name but no inboxId provided');
+      expect(result.requiredPrerequisites).toContain('listAllInboxes');
+    });
   });
 
   describe('inbox mention detection', () => {
@@ -94,9 +140,8 @@ describe('HelpScoutAPIConstraints', () => {
       'search in the support inbox',
       'find messages from billing mailbox',
       'check sales queue',
-      'look at technical support',
       'customer service inbox',
-      'general help desk'
+      'general help desk inbox'
     ];
 
     testCases.forEach(query => {
@@ -110,8 +155,8 @@ describe('HelpScoutAPIConstraints', () => {
 
         const result = HelpScoutAPIConstraints.validateToolCall(context);
         
-        // Should suggest searchInboxes first
-        expect(result.suggestions.some(s => s.includes('searchInboxes'))).toBe(true);
+        // Should direct callers to the current inbox discovery path.
+        expect(result.suggestions.some(s => s.includes('listAllInboxes'))).toBe(true);
       });
     });
   });

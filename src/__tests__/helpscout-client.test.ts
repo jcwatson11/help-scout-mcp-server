@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
 import nock from 'nock';
 import { HelpScoutClient } from '../utils/helpscout-client.js';
+import { cache } from '../utils/cache.js';
 
 // Set a more generous timeout for all tests in this file
 jest.setTimeout(15000);
@@ -29,8 +30,8 @@ jest.mock('../utils/config.js', () => ({
   config: {
     helpscout: {
       get apiKey() { return process.env.HELPSCOUT_API_KEY || ''; },
-      get clientId() { return process.env.HELPSCOUT_CLIENT_ID || process.env.HELPSCOUT_API_KEY || ''; },
-      get clientSecret() { return process.env.HELPSCOUT_CLIENT_SECRET || process.env.HELPSCOUT_APP_SECRET || ''; },
+      get clientId() { return process.env.HELPSCOUT_APP_ID || process.env.HELPSCOUT_CLIENT_ID || process.env.HELPSCOUT_API_KEY || ''; },
+      get clientSecret() { return process.env.HELPSCOUT_APP_SECRET || process.env.HELPSCOUT_CLIENT_SECRET || ''; },
       get baseUrl() { return process.env.HELPSCOUT_BASE_URL || 'https://api.helpscout.net/v2/'; },
     },
     cache: {
@@ -41,7 +42,7 @@ jest.mock('../utils/config.js', () => ({
       level: 'info',
     },
     security: {
-      allowPii: false,
+      redactMessageContent: false,
     },
   },
   validateConfig: jest.fn(),
@@ -56,17 +57,11 @@ describe('HelpScoutClient', () => {
     nock.cleanAll();
     nock.restore();
     nock.activate();
-    
-    // Enable debug for failing tests
-    if (process.env.NODE_ENV !== 'production') {
-      nock.recorder.rec({
-        dont_print: true,
-        output_objects: true
-      });
-    }
+    (cache as jest.Mocked<typeof cache>).get.mockReturnValue(null);
     
     // Clear any environment variables from previous tests
     delete process.env.HELPSCOUT_API_KEY;
+    delete process.env.HELPSCOUT_APP_ID;
     delete process.env.HELPSCOUT_CLIENT_ID;
     delete process.env.HELPSCOUT_CLIENT_SECRET;
     delete process.env.HELPSCOUT_APP_SECRET;
@@ -78,10 +73,19 @@ describe('HelpScoutClient', () => {
     if (pending.length > 0) {
       console.log('Pending nock interceptors:', pending);
     }
+    jest.restoreAllMocks();
+    nock.recorder.clear();
     nock.cleanAll();
+    nock.restore();
   });
 
   describe('authentication', () => {
+    it('rejects non-HTTPS base URLs before direct client use can authenticate', () => {
+      process.env.HELPSCOUT_BASE_URL = 'http://api.helpscout.net/v2/';
+
+      expect(() => new HelpScoutClient()).toThrow('HELPSCOUT_BASE_URL must use HTTPS');
+    });
+
     it.skip('should authenticate with OAuth2 Client Credentials', async () => {
       // SKIP: Nock has timing issues with axios OAuth2 POST requests in this test environment.
       // OAuth2 authentication is properly tested in integration tests with proper mocking.
@@ -117,6 +121,103 @@ describe('HelpScoutClient', () => {
       // The logic being tested is in src/utils/helpscout-client.ts:198-217
       // It should make a POST request to /oauth2/token with client credentials
       // and receive an access_token and expires_in response
+    });
+
+    it('should retry transient OAuth2 token failures before API requests', async () => {
+      process.env.HELPSCOUT_CLIENT_ID = 'test-client-id';
+      process.env.HELPSCOUT_CLIENT_SECRET = 'test-client-secret';
+      process.env.HELPSCOUT_BASE_URL = `${baseURL}/`;
+
+      const authScope = nock('https://api.helpscout.net')
+        .post('/v2/oauth2/token')
+        .reply(500, { message: 'temporary auth failure' })
+        .post('/v2/oauth2/token')
+        .reply(200, {
+          access_token: 'retried-token',
+          expires_in: 7200,
+        });
+
+      const apiScope = nock(baseURL)
+        .get('/mailboxes')
+        .query({ page: 1, size: 1 })
+        .matchHeader('authorization', 'Bearer retried-token')
+        .reply(200, { _embedded: { mailboxes: [] } });
+
+      const client = new HelpScoutClient();
+      jest.spyOn(client as any, 'sleep').mockResolvedValue(undefined);
+
+      await expect(client.get('/mailboxes', { page: 1, size: 1 })).resolves.toEqual({
+        _embedded: { mailboxes: [] },
+      });
+
+      expect(authScope.isDone()).toBe(true);
+      expect(apiScope.isDone()).toBe(true);
+      await client.closePool();
+    });
+
+    it('should refresh a stale OAuth bearer before retrying a 401', async () => {
+      process.env.HELPSCOUT_CLIENT_ID = 'test-client-id';
+      process.env.HELPSCOUT_CLIENT_SECRET = 'test-client-secret';
+      process.env.HELPSCOUT_BASE_URL = `${baseURL}/`;
+
+      const staleApiScope = nock(baseURL)
+        .get('/mailboxes')
+        .query({ page: 1, size: 1 })
+        .matchHeader('authorization', 'Bearer stale-token')
+        .reply(401, { message: 'Unauthorized' });
+
+      const authScope = nock('https://api.helpscout.net')
+        .post('/v2/oauth2/token')
+        .reply(200, {
+          access_token: 'fresh-token',
+          expires_in: 7200,
+        });
+
+      const freshApiScope = nock(baseURL)
+        .get('/mailboxes')
+        .query({ page: 1, size: 1 })
+        .matchHeader('authorization', value => value === 'Bearer fresh-token')
+        .reply(200, { _embedded: { mailboxes: [] } });
+
+      const client = new HelpScoutClient();
+      (client as any).accessToken = 'stale-token';
+      (client as any).tokenExpiresAt = Date.now() + 60_000;
+      jest.spyOn(client as any, 'sleep').mockResolvedValue(undefined);
+
+      await expect((client as any).executeWithRetry(() =>
+        (client as any).client.get('/mailboxes', {
+          params: { page: 1, size: 1 },
+          headers: { authorization: 'Bearer stale-token' },
+        })
+      )).resolves.toMatchObject({
+        data: { _embedded: { mailboxes: [] } },
+      });
+
+      expect(staleApiScope.isDone()).toBe(true);
+      expect(authScope.isDone()).toBe(true);
+      expect(freshApiScope.isDone()).toBe(true);
+      await client.closePool();
+    });
+
+    it('should not retry invalid OAuth credentials on token endpoint 401', async () => {
+      process.env.HELPSCOUT_CLIENT_ID = 'bad-client-id';
+      process.env.HELPSCOUT_CLIENT_SECRET = 'bad-client-secret';
+      process.env.HELPSCOUT_BASE_URL = `${baseURL}/`;
+
+      const authScope = nock('https://api.helpscout.net')
+        .post('/v2/oauth2/token')
+        .once()
+        .reply(401, { message: 'Invalid credentials' });
+
+      const client = new HelpScoutClient();
+      jest.spyOn(client as any, 'sleep').mockResolvedValue(undefined);
+
+      await expect(client.get('/mailboxes', { page: 1, size: 1 })).rejects.toThrow(
+        'Failed to authenticate with Help Scout API. Check your OAuth2 credentials.'
+      );
+
+      expect(authScope.isDone()).toBe(true);
+      await client.closePool();
     });
   });
 
@@ -177,6 +278,38 @@ describe('HelpScoutClient', () => {
       });
     }, 10000);
 
+    it('should return raw response data and headers for non-JSON reads', async () => {
+      process.env.HELPSCOUT_CLIENT_ID = 'test-client-id';
+      process.env.HELPSCOUT_CLIENT_SECRET = 'test-client-secret';
+      process.env.HELPSCOUT_BASE_URL = `${baseURL}/`;
+
+      nock(baseURL)
+        .post('/oauth2/token')
+        .reply(200, {
+          access_token: 'mock-access-token',
+          token_type: 'Bearer',
+          expires_in: 3600,
+        })
+        .get('/conversations/123/attachments/789/file')
+        .reply(200, Buffer.from('file bytes'), {
+          'Content-Type': 'text/plain',
+          'Content-Disposition': 'attachment; filename="file.txt"',
+        });
+
+      const client = new HelpScoutClient();
+      const response = await client.getRaw<Buffer>(
+        '/conversations/123/attachments/789/file',
+        undefined,
+        { responseType: 'arraybuffer' }
+      );
+
+      expect(Buffer.isBuffer(response.data)).toBe(true);
+      expect(response.data.toString('utf8')).toBe('file bytes');
+      expect(response.headers['content-type']).toContain('text/plain');
+      expect(response.headers['content-disposition']).toContain('file.txt');
+      void client.closePool();
+    }, 10000);
+
     it('should handle 429 rate limit errors with retries', async () => {
       const client = new HelpScoutClient();
       
@@ -201,6 +334,65 @@ describe('HelpScoutClient', () => {
         message: 'Help Scout API rate limit exceeded. Please wait 1 seconds before retrying.'
       });
     }, 15000); // Increase timeout to account for retries
+
+    it('honors long Retry-After delta seconds instead of capping at retry backoff max', async () => {
+      const client = new HelpScoutClient();
+      const retryError = {
+        isAxiosError: true,
+        response: {
+          status: 429,
+          headers: { 'retry-after': '60' },
+        },
+        config: {
+          metadata: { requestId: 'retry-after-delta' },
+        },
+        message: 'Rate limited',
+      };
+      const operation = jest.fn<() => Promise<any>>()
+        .mockRejectedValueOnce(retryError)
+        .mockResolvedValueOnce({ data: { ok: true } });
+      const sleep = jest.spyOn(client as any, 'sleep').mockResolvedValue(undefined);
+
+      await expect((client as any).executeWithRetry(operation, {
+        retries: 1,
+        retryDelay: 1,
+        maxRetryDelay: 10,
+        retryCondition: () => true,
+      })).resolves.toMatchObject({ data: { ok: true } });
+
+      expect(sleep).toHaveBeenCalledWith(60000);
+    });
+
+    it('honors HTTP-date Retry-After headers', async () => {
+      const now = Date.UTC(2026, 0, 1, 0, 0, 0);
+      jest.spyOn(Date, 'now').mockReturnValue(now);
+      const client = new HelpScoutClient();
+      const retryAt = new Date(now + 45000).toUTCString();
+      const retryError = {
+        isAxiosError: true,
+        response: {
+          status: 429,
+          headers: { 'retry-after': retryAt },
+        },
+        config: {
+          metadata: { requestId: 'retry-after-date' },
+        },
+        message: 'Rate limited',
+      };
+      const operation = jest.fn<() => Promise<any>>()
+        .mockRejectedValueOnce(retryError)
+        .mockResolvedValueOnce({ data: { ok: true } });
+      const sleep = jest.spyOn(client as any, 'sleep').mockResolvedValue(undefined);
+
+      await expect((client as any).executeWithRetry(operation, {
+        retries: 1,
+        retryDelay: 1,
+        maxRetryDelay: 10,
+        retryCondition: () => true,
+      })).resolves.toMatchObject({ data: { ok: true } });
+
+      expect(sleep).toHaveBeenCalledWith(45000);
+    });
 
     it('should handle 400 bad request errors', async () => {
       const client = new HelpScoutClient();
@@ -277,10 +469,46 @@ describe('HelpScoutClient', () => {
       expect(defaultTtl).toBe(300); // 5 minutes for conversations
       
       const mailboxTtl = (client as any).getDefaultCacheTtl('/mailboxes');
-      expect(mailboxTtl).toBe(1440); // 24 hours for mailboxes
+      expect(mailboxTtl).toBe(86400); // 24 hours for mailboxes
+
+      const savedRepliesTtl = (client as any).getDefaultCacheTtl('/mailboxes/123/saved-replies');
+      expect(savedRepliesTtl).toBe(300); // 5 minutes for editable saved reply content
       
       const threadsTtl = (client as any).getDefaultCacheTtl('/threads');
       expect(threadsTtl).toBe(300); // 5 minutes for threads
+    });
+
+    it('should bypass cache reads and writes when ttl is zero', async () => {
+      process.env.HELPSCOUT_CLIENT_ID = 'test-client-id';
+      process.env.HELPSCOUT_CLIENT_SECRET = 'test-client-secret';
+      const staleResponse = { _embedded: { mailboxes: [{ id: 'old', name: 'Old Inbox' }] } };
+      const freshResponse = { _embedded: { mailboxes: [{ id: 'new', name: 'Fresh Inbox' }] } };
+      const mockedCache = cache as jest.Mocked<typeof cache>;
+
+      mockedCache.get.mockReturnValue(staleResponse);
+
+      const authScope = nock('https://api.helpscout.net')
+        .post('/v2/oauth2/token')
+        .reply(200, {
+          access_token: 'fresh-token',
+          expires_in: 7200,
+        });
+
+      const apiScope = nock(baseURL)
+        .get('/mailboxes')
+        .query({ page: 1, size: 1 })
+        .matchHeader('authorization', 'Bearer fresh-token')
+        .reply(200, freshResponse);
+
+      const client = new HelpScoutClient();
+
+      await expect(client.get('/mailboxes', { page: 1, size: 1 }, { ttl: 0 })).resolves.toEqual(freshResponse);
+
+      expect(mockedCache.get).not.toHaveBeenCalled();
+      expect(mockedCache.set).not.toHaveBeenCalled();
+      expect(authScope.isDone()).toBe(true);
+      expect(apiScope.isDone()).toBe(true);
+      await client.closePool();
     });
   });
 
@@ -446,83 +674,6 @@ describe('HelpScoutClient', () => {
 
         resolve();
       }));
-    });
-  });
-
-  describe('executeWithRetry rate-limit detection', () => {
-    it('should detect rate limits from transformed ApiError (no .response)', async () => {
-      const client = new HelpScoutClient();
-
-      // Simulate what happens when the error interceptor transforms a 429
-      // AxiosError into an ApiError — it loses .response but gains .code
-      // and .retryAfter
-      const apiError = {
-        code: 'RATE_LIMIT',
-        message: 'Rate limit exceeded',
-        retryAfter: 2,
-        details: {},
-      };
-
-      let attemptCount = 0;
-      const operation = () => {
-        attemptCount++;
-        return Promise.reject(apiError);
-      };
-
-      const retryConfig = {
-        retries: 1,
-        retryDelay: 100,
-        maxRetryDelay: 5000,
-        retryCondition: () => true,
-      };
-
-      try {
-        await (client as any).executeWithRetry(operation, retryConfig);
-      } catch {
-        // Expected to throw after exhausting retries
-      }
-
-      // Should have attempted twice (initial + 1 retry)
-      expect(attemptCount).toBe(2);
-    });
-
-    it('should use retryAfter from ApiError for delay calculation', async () => {
-      const client = new HelpScoutClient();
-
-      const apiError = {
-        code: 'RATE_LIMIT',
-        message: 'Rate limit exceeded',
-        retryAfter: 1, // 1 second
-        details: {},
-      };
-
-      const sleepCalls: number[] = [];
-      (client as any).sleep = (ms: number) => {
-        sleepCalls.push(ms);
-        // Don't actually sleep in tests
-        return Promise.resolve();
-      };
-
-      const operation = () => {
-        return Promise.reject(apiError);
-      };
-
-      const retryConfig = {
-        retries: 1,
-        retryDelay: 100,
-        maxRetryDelay: 10000,
-        retryCondition: () => true,
-      };
-
-      try {
-        await (client as any).executeWithRetry(operation, retryConfig);
-      } catch {
-        // Expected
-      }
-
-      // Should have slept with the retryAfter value (1s = 1000ms), not exponential backoff
-      expect(sleepCalls).toHaveLength(1);
-      expect(sleepCalls[0]).toBe(1000);
     });
   });
 });

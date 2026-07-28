@@ -102,9 +102,9 @@ describe('Customer & Organization Tools', () => {
       expect(data.customer.address).toBeUndefined();
     });
 
-    it('should redact PII when allowPii is false', async () => {
-      const originalAllowPii = config.security.allowPii;
-      config.security.allowPii = false;
+    it('should leave customer contact fields visible when message content redaction is enabled', async () => {
+      const originalRedactMessageContent = config.security.redactMessageContent;
+      config.security.redactMessageContent = true;
 
       try {
         nock(baseURL)
@@ -134,15 +134,15 @@ describe('Customer & Organization Tools', () => {
         const result = await toolHandler.callTool(makeRequest('getCustomer', { customerId: '123' }));
         const data = parseResult(result);
 
-        expect(data.customer.background).toBe('[redacted]');
-        expect(data.customer._embedded.emails[0].value).toBe('[redacted]');
-        expect(data.customer._embedded.phones[0].value).toBe('[redacted]');
-        expect(data.customer.address.city).toBe('[redacted]');
-        expect(data.customer.address.state).toBe('[redacted]');
-        expect(data.customer.address.postalCode).toBe('[redacted]');
-        expect(data.customer.address.country).toBe('US'); // Country is not PII
+        expect(data.customer.background).toBe('Some personal notes');
+        expect(data.customer._embedded.emails[0].value).toBe('jane@example.com');
+        expect(data.customer._embedded.phones[0].value).toBe('+1234567890');
+        expect(data.customer.address.city).toBe('Nashville');
+        expect(data.customer.address.state).toBe('TN');
+        expect(data.customer.address.postalCode).toBe('37201');
+        expect(data.customer.address.country).toBe('US');
       } finally {
-        config.security.allowPii = originalAllowPii;
+        config.security.redactMessageContent = originalRedactMessageContent;
       }
     });
   });
@@ -214,9 +214,9 @@ describe('Customer & Organization Tools', () => {
       expect(data.nextCursor).toBe('abc');
     });
 
-    it('should redact email and customer data when allowPii is false', async () => {
-      const originalAllowPii = config.security.allowPii;
-      config.security.allowPii = false;
+    it('should leave searched email and customer data visible when message content redaction is enabled', async () => {
+      const originalRedactMessageContent = config.security.redactMessageContent;
+      config.security.redactMessageContent = true;
 
       try {
         nock('https://api.helpscout.net')
@@ -234,11 +234,11 @@ describe('Customer & Organization Tools', () => {
         const result = await toolHandler.callTool(makeRequest('searchCustomersByEmail', { email: 'jane@example.com' }));
         const data = parseResult(result);
 
-        expect(data.searchedEmail).toBe('[redacted]');
-        expect(data.results[0].background).toBe('[redacted]');
-        expect(data.results[0]._embedded.emails[0].value).toBe('[redacted]');
+        expect(data.searchedEmail).toBe('jane@example.com');
+        expect(data.results[0].background).toBe('VIP client');
+        expect(data.results[0]._embedded.emails[0].value).toBe('jane@example.com');
       } finally {
-        config.security.allowPii = originalAllowPii;
+        config.security.redactMessageContent = originalRedactMessageContent;
       }
     });
 
@@ -253,6 +253,78 @@ describe('Customer & Organization Tools', () => {
 
       expect(data.results).toHaveLength(0);
       expect(data.returnedCount).toBe(0);
+    });
+  });
+
+  describe('listCustomersV3', () => {
+    it('should list customers through the direct v3 endpoint with official filters and cursor links', async () => {
+      nock('https://api.helpscout.net')
+        .get('/v3/customers')
+        .query((query) => (
+          query.firstName === 'Jane' &&
+          query.lastName === 'Doe' &&
+          query.email === 'jane@example.com' &&
+          query.createdSince === '2024-01-01T00:00:00Z' &&
+          query.modifiedSince === '2024-06-01T00:00:00Z' &&
+          query.query === '(email:"jane@example.com")' &&
+          query.cursor === 'cursor-1'
+        ))
+        .reply(200, {
+          _embedded: {
+            customers: [
+              { id: 1, firstName: 'Jane', lastName: 'Doe', createdAt: '2024-01-01T00:00:00Z', updatedAt: '2024-06-01T00:00:00Z',
+                _embedded: { emails: [{ id: 1, value: 'jane@example.com', type: 'work' }] } },
+            ],
+          },
+          _links: {
+            self: { href: 'https://api.helpscout.net/v3/customers?cursor=cursor-1' },
+            first: { href: 'https://api.helpscout.net/v3/customers' },
+            next: { href: 'https://api.helpscout.net/v3/customers?cursor=cursor-2' },
+          },
+        });
+
+      const result = await toolHandler.callTool(makeRequest('listCustomersV3', {
+        firstName: 'Jane',
+        lastName: 'Doe',
+        email: 'jane@example.com',
+        createdSince: '2024-01-01T00:00:00Z',
+        modifiedSince: '2024-06-01T00:00:00Z',
+        query: '(email:"jane@example.com")',
+        cursor: 'cursor-1',
+      }));
+      const data = parseResult(result);
+
+      expect(data.results).toHaveLength(1);
+      expect(data.results[0].firstName).toBe('Jane');
+      expect(data.returnedCount).toBe(1);
+      expect(data.links.next.href).toContain('cursor-2');
+      expect(data.nextCursor).toBe('cursor-2');
+      expect(data.pagination.type).toBe('cursor');
+    });
+
+    it('should return an empty v3 customer result shape', async () => {
+      nock('https://api.helpscout.net')
+        .get('/v3/customers')
+        .query(true)
+        .reply(200, {
+          _embedded: { customers: [] },
+          _links: { self: { href: 'https://api.helpscout.net/v3/customers' } },
+        });
+
+      const result = await toolHandler.callTool(makeRequest('listCustomersV3', { firstName: 'Nobody' }));
+      const data = parseResult(result);
+
+      expect(data.results).toEqual([]);
+      expect(data.returnedCount).toBe(0);
+      expect(data.links.self.href).toContain('/v3/customers');
+      expect(data.nextCursor).toBeUndefined();
+    });
+
+    it('should reject whitespace-only cursors before making a request', async () => {
+      const result = await toolHandler.callTool(makeRequest('listCustomersV3', { cursor: '   ' }));
+
+      expect(result.isError).toBe(true);
+      expect(nock.isDone()).toBe(false);
     });
   });
 
@@ -406,12 +478,12 @@ describe('Customer & Organization Tools', () => {
     });
   });
 
-  // ── PII Redaction Tests (F9) ──
+  // ── Message Content Redaction Boundary Tests (F9) ──
 
-  describe('PII redaction for organizations', () => {
-    it('should redact PII in getOrganization when allowPii is false', async () => {
-      const originalAllowPii = config.security.allowPii;
-      config.security.allowPii = false;
+  describe('message content redaction boundary for organizations', () => {
+    it('should leave organization fields visible when message content redaction is enabled', async () => {
+      const originalRedactMessageContent = config.security.redactMessageContent;
+      config.security.redactMessageContent = true;
 
       try {
         nock(baseURL)
@@ -435,28 +507,25 @@ describe('Customer & Organization Tools', () => {
         const result = await toolHandler.callTool(makeRequest('getOrganization', { organizationId: '456' }));
         const data = parseResult(result);
 
-        // Preserved fields
         expect(data.organization.id).toBe(456);
         expect(data.organization.name).toBe('Acme Corp');
         expect(data.organization.customerCount).toBe(10);
         expect(data.organization.logoUrl).toBe('https://acme.com/logo.png');
         expect(data.organization.brandColor).toBe('#FF0000');
-
-        // Redacted fields (arrays preserve element count)
-        expect(data.organization.website).toBe('[redacted]');
-        expect(data.organization.domains).toEqual(['[redacted]', '[redacted]']);
-        expect(data.organization.phones).toEqual(['[redacted]']);
-        expect(data.organization.location).toBe('[redacted]');
-        expect(data.organization.note).toBe('[redacted]');
-        expect(data.organization.description).toBe('[redacted]');
+        expect(data.organization.website).toBe('https://acme.com');
+        expect(data.organization.domains).toEqual(['acme.com', 'acme.io']);
+        expect(data.organization.phones).toEqual(['+1-555-0100']);
+        expect(data.organization.location).toBe('Nashville, TN');
+        expect(data.organization.note).toBe('Key account, handle with care');
+        expect(data.organization.description).toBe('Enterprise SaaS company');
       } finally {
-        config.security.allowPii = originalAllowPii;
+        config.security.redactMessageContent = originalRedactMessageContent;
       }
     });
 
-    it('should redact PII in listOrganizations when allowPii is false', async () => {
-      const originalAllowPii = config.security.allowPii;
-      config.security.allowPii = false;
+    it('should leave organization lists visible when message content redaction is enabled', async () => {
+      const originalRedactMessageContent = config.security.redactMessageContent;
+      config.security.redactMessageContent = true;
 
       try {
         nock(baseURL)
@@ -479,20 +548,20 @@ describe('Customer & Organization Tools', () => {
         const data = parseResult(result);
 
         expect(data.results[0].name).toBe('Org A');
-        expect(data.results[0].website).toBe('[redacted]');
-        expect(data.results[0].domains).toEqual(['[redacted]']);
-        expect(data.results[0].phones).toEqual(['[redacted]']);
-        expect(data.results[0].location).toBe('[redacted]');
-        expect(data.results[0].note).toBe('[redacted]');
-        expect(data.results[0].description).toBe('[redacted]');
+        expect(data.results[0].website).toBe('https://orga.com');
+        expect(data.results[0].domains).toEqual(['orga.com']);
+        expect(data.results[0].phones).toEqual(['+1-555-0101']);
+        expect(data.results[0].location).toBe('Austin, TX');
+        expect(data.results[0].note).toBe('Notes here');
+        expect(data.results[0].description).toBe('Desc here');
       } finally {
-        config.security.allowPii = originalAllowPii;
+        config.security.redactMessageContent = originalRedactMessageContent;
       }
     });
 
-    it('should redact customer PII in getOrganizationConversations when allowPii is false', async () => {
-      const originalAllowPii = config.security.allowPii;
-      config.security.allowPii = false;
+    it('should leave customer fields visible in getOrganizationConversations when message content redaction is enabled', async () => {
+      const originalRedactMessageContent = config.security.redactMessageContent;
+      config.security.redactMessageContent = true;
 
       try {
         nock(baseURL)
@@ -515,19 +584,18 @@ describe('Customer & Organization Tools', () => {
         const result = await toolHandler.callTool(makeRequest('getOrganizationConversations', { organizationId: '456' }));
         const data = parseResult(result);
 
-        // Customer ID preserved, PII redacted
         expect(data.conversations[0].customer.id).toBe(1);
-        expect(data.conversations[0].customer.email).toBe('[redacted]');
-        expect(data.conversations[0].customer.firstName).toBe('[redacted]');
-        expect(data.conversations[0].customer.lastName).toBe('[redacted]');
+        expect(data.conversations[0].customer.email).toBe('john@acme.com');
+        expect(data.conversations[0].customer.firstName).toBe('John');
+        expect(data.conversations[0].customer.lastName).toBe('Doe');
       } finally {
-        config.security.allowPii = originalAllowPii;
+        config.security.redactMessageContent = originalRedactMessageContent;
       }
     });
 
-    it('should redact customer fields in getOrganizationMembers when allowPii is false', async () => {
-      const originalAllowPii = config.security.allowPii;
-      config.security.allowPii = false;
+    it('should leave customer fields visible in getOrganizationMembers when message content redaction is enabled', async () => {
+      const originalRedactMessageContent = config.security.redactMessageContent;
+      config.security.redactMessageContent = true;
 
       try {
         nock(baseURL)
@@ -550,17 +618,15 @@ describe('Customer & Organization Tools', () => {
         const result = await toolHandler.callTool(makeRequest('getOrganizationMembers', { organizationId: '456' }));
         const data = parseResult(result);
 
-        // ID preserved
         expect(data.members[0].id).toBe(1);
-        // PII redacted
-        expect(data.members[0].firstName).toBe('[redacted]');
-        expect(data.members[0].lastName).toBe('[redacted]');
-        expect(data.members[0].jobTitle).toBe('[redacted]');
-        expect(data.members[0].location).toBe('[redacted]');
-        expect(data.members[0].photoUrl).toBe('[redacted]');
-        expect(data.members[0].age).toBe('[redacted]');
+        expect(data.members[0].firstName).toBe('John');
+        expect(data.members[0].lastName).toBe('Doe');
+        expect(data.members[0].jobTitle).toBe('CTO');
+        expect(data.members[0].location).toBe('Nashville, TN');
+        expect(data.members[0].photoUrl).toBe('https://example.com/photo.jpg');
+        expect(data.members[0].age).toBe('35');
       } finally {
-        config.security.allowPii = originalAllowPii;
+        config.security.redactMessageContent = originalRedactMessageContent;
       }
     });
   });
@@ -569,7 +635,7 @@ describe('Customer & Organization Tools', () => {
     const mockEmails = { _embedded: { emails: [{ id: 1, value: 'jane@example.com', type: 'work' }] } };
     const mockPhones = { _embedded: { phones: [{ id: 2, value: '+1-555-0100', type: 'work' }] } };
     const mockChats = { _embedded: { chats: [{ id: 3, value: 'jane.doe', type: 'other' }] } };
-    const mockSocial = { _embedded: { social_profiles: [{ id: 4, value: '@janedoe', type: 'twitter' }] } };
+    const mockSocial = { _embedded: { 'social-profiles': [{ id: 4, value: '@janedoe', type: 'twitter' }] } };
     const mockWebsites = { _embedded: { websites: [{ id: 5, value: 'https://janedoe.com' }] } };
     const mockAddress = { city: 'Nashville', state: 'TN', postalCode: '37201', country: 'US', lines: ['100 Broadway'] };
 
@@ -634,32 +700,44 @@ describe('Customer & Organization Tools', () => {
       expect(data.partialErrors.length).toBeGreaterThan(0);
     });
 
-    it('should redact PII when allowPii is false', async () => {
-      const originalAllowPii = config.security.allowPii;
-      config.security.allowPii = false;
+    it('should leave contact values visible when message content redaction is enabled', async () => {
+      const originalRedactMessageContent = config.security.redactMessageContent;
+      config.security.redactMessageContent = true;
       try {
         mockAllSubResources('123');
         const result = await toolHandler.callTool(makeRequest('getCustomerContacts', { customerId: '123' }));
         const data = parseResult(result);
 
-        expect(data.emails[0].value).toBe('[redacted]');
-        expect(data.phones[0].value).toBe('[redacted]');
-        expect(data.chats[0].value).toBe('[redacted]');
-        expect(data.socialProfiles[0].value).toBe('[redacted]');
-        expect(data.websites[0].value).toBe('[redacted]');
-        // Address: city/state/postal redacted, country preserved
-        expect(data.address.city).toBe('[redacted]');
-        expect(data.address.state).toBe('[redacted]');
-        expect(data.address.postalCode).toBe('[redacted]');
+        expect(data.emails[0].value).toBe('jane@example.com');
+        expect(data.phones[0].value).toBe('+1-555-0100');
+        expect(data.chats[0].value).toBe('jane.doe');
+        expect(data.socialProfiles[0].value).toBe('@janedoe');
+        expect(data.websites[0].value).toBe('https://janedoe.com');
+        expect(data.address.city).toBe('Nashville');
+        expect(data.address.state).toBe('TN');
+        expect(data.address.postalCode).toBe('37201');
         expect(data.address.country).toBe('US');
       } finally {
-        config.security.allowPii = originalAllowPii;
+        config.security.redactMessageContent = originalRedactMessageContent;
       }
     });
 
     it('should reject non-numeric customerId', async () => {
       const result = await toolHandler.callTool(makeRequest('getCustomerContacts', { customerId: 'abc' }));
       expect((result as any).isError).toBe(true);
+    });
+
+    it('should accept the legacy underscored social profile embedded key', async () => {
+      nock(baseURL).get('/customers/123/social-profiles').query(true).reply(200, {
+        _embedded: { social_profiles: [{ id: 4, value: '@janedoe', type: 'twitter' }] },
+      });
+
+      const result = await toolHandler.callTool(makeRequest('listCustomerSocialProfiles', { customerId: '123' }));
+      const data = parseResult(result);
+
+      expect(data.socialProfiles).toHaveLength(1);
+      expect(data.socialProfiles[0].value).toBe('@janedoe');
+      expect(data.total).toBe(1);
     });
   });
 });

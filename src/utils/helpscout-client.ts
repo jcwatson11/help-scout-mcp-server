@@ -1,4 +1,4 @@
-import axios, { AxiosInstance, AxiosResponse, AxiosError } from 'axios';
+import axios, { AxiosInstance, AxiosResponse, AxiosError, ResponseType } from 'axios';
 import { Agent as HttpAgent } from 'http';
 import { Agent as HttpsAgent } from 'https';
 
@@ -12,6 +12,11 @@ interface RetryConfig {
   retryDelay: number;
   maxRetryDelay: number;
   retryCondition?: (error: AxiosError) => boolean;
+}
+
+interface RawGetOptions {
+  responseType?: ResponseType;
+  headers?: Record<string, string>;
 }
 
 declare module 'axios' {
@@ -68,41 +73,44 @@ export class HelpScoutClient {
   private authenticationPromise: Promise<void> | null = null;
   private httpAgent: HttpAgent;
   private httpsAgent: HttpsAgent;
+  private readonly poolConfig: ConnectionPoolConfig;
   private defaultRetryConfig: RetryConfig = {
     retries: 3,
     retryDelay: 1000, // 1 second
     maxRetryDelay: 10000, // 10 seconds
     retryCondition: (error: AxiosError) => {
-      // Retry on network errors, timeouts, 5xx responses, and rate limits.
-      // The error interceptor transforms AxiosError into ApiError, so also
-      // check the ApiError shape for rate limits.
+      // Retry on network errors, timeouts, OAuth token refresh, 5xx responses,
+      // and rate limits (429). The interceptor passes errors through as raw
+      // AxiosError, so inspect .response.status here.
       return !error.response ||
              error.code === 'ECONNABORTED' ||
+             (error.response.status === 401 && Boolean(config.helpscout.clientSecret)) ||
              (error.response.status >= 500 && error.response.status < 600) ||
-             error.response.status === 429 ||
-             (error as unknown as ApiError).code === 'RATE_LIMIT';
+             error.response.status === 429;
     }
   };
 
   constructor(poolConfig: Partial<ConnectionPoolConfig> = {}) {
+    this.validateHttpsBaseUrl(config.helpscout.baseUrl);
+
     // Merge default pool config with any custom settings
-    const finalPoolConfig = { ...DEFAULT_POOL_CONFIG, ...poolConfig };
+    this.poolConfig = { ...DEFAULT_POOL_CONFIG, ...poolConfig };
     
     // Create HTTP agents with connection pooling
     this.httpAgent = new HttpAgent({
-      keepAlive: finalPoolConfig.keepAlive,
-      keepAliveMsecs: finalPoolConfig.keepAliveMsecs,
-      maxSockets: finalPoolConfig.maxSockets,
-      maxFreeSockets: finalPoolConfig.maxFreeSockets,
-      timeout: finalPoolConfig.timeout,
+      keepAlive: this.poolConfig.keepAlive,
+      keepAliveMsecs: this.poolConfig.keepAliveMsecs,
+      maxSockets: this.poolConfig.maxSockets,
+      maxFreeSockets: this.poolConfig.maxFreeSockets,
+      timeout: this.poolConfig.timeout,
     });
 
     this.httpsAgent = new HttpsAgent({
-      keepAlive: finalPoolConfig.keepAlive,
-      keepAliveMsecs: finalPoolConfig.keepAliveMsecs,
-      maxSockets: finalPoolConfig.maxSockets,
-      maxFreeSockets: finalPoolConfig.maxFreeSockets,
-      timeout: finalPoolConfig.timeout,
+      keepAlive: this.poolConfig.keepAlive,
+      keepAliveMsecs: this.poolConfig.keepAliveMsecs,
+      maxSockets: this.poolConfig.maxSockets,
+      maxFreeSockets: this.poolConfig.maxFreeSockets,
+      timeout: this.poolConfig.timeout,
     });
 
     // Create Axios instance with connection pooling agents
@@ -119,15 +127,51 @@ export class HelpScoutClient {
     this.setupInterceptors();
     
     logger.info('HTTP connection pool initialized', {
-      maxSockets: finalPoolConfig.maxSockets,
-      maxFreeSockets: finalPoolConfig.maxFreeSockets,
-      keepAlive: finalPoolConfig.keepAlive,
-      timeout: finalPoolConfig.timeout,
+      maxSockets: this.poolConfig.maxSockets,
+      maxFreeSockets: this.poolConfig.maxFreeSockets,
+      keepAlive: this.poolConfig.keepAlive,
+      timeout: this.poolConfig.timeout,
     });
   }
 
   private async sleep(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  private validateHttpsBaseUrl(baseUrl: string): void {
+    let parsed: URL;
+    try {
+      parsed = new URL(baseUrl);
+    } catch {
+      throw new Error(`Invalid Help Scout base URL: ${baseUrl}`);
+    }
+
+    if (parsed.protocol !== 'https:') {
+      throw new Error('HELPSCOUT_BASE_URL must use HTTPS to protect OAuth2 credentials');
+    }
+  }
+
+  private parseRetryAfterMs(value: unknown, fallbackMs = 60000): number {
+    const rawValue = Array.isArray(value) ? value[0] : value;
+
+    if (typeof rawValue === 'number' && Number.isFinite(rawValue) && rawValue >= 0) {
+      return rawValue * 1000;
+    }
+
+    if (typeof rawValue === 'string') {
+      const trimmed = rawValue.trim();
+      const seconds = Number(trimmed);
+      if (Number.isFinite(seconds) && seconds >= 0) {
+        return seconds * 1000;
+      }
+
+      const retryAt = Date.parse(trimmed);
+      if (Number.isFinite(retryAt)) {
+        return Math.max(retryAt - Date.now(), 0);
+      }
+    }
+
+    return fallbackMs;
   }
 
   private calculateRetryDelay(attempt: number, baseDelay: number, maxDelay: number): number {
@@ -147,6 +191,10 @@ export class HelpScoutClient {
       try {
         return await operation();
       } catch (error) {
+        if (!axios.isAxiosError(error)) {
+          throw error;
+        }
+
         lastError = error as AxiosError;
         
         // Don't retry if it's the last attempt
@@ -159,16 +207,20 @@ export class HelpScoutClient {
           break;
         }
         
-        // Handle rate limits specially — check both raw AxiosError (has .response)
-        // and transformed ApiError (has .code === 'RATE_LIMIT' and .retryAfter)
-        const isRateLimit = lastError.response?.status === 429
-          || ((lastError as unknown as ApiError).code === 'RATE_LIMIT');
-        if (isRateLimit) {
-          const retryAfterSecs = lastError.response?.headers?.['retry-after']
-            || (lastError as unknown as ApiError).retryAfter
-            || 60;
-          const retryAfter = (typeof retryAfterSecs === 'string' ? parseInt(retryAfterSecs, 10) : retryAfterSecs) * 1000;
-          const delay = Math.min(retryAfter, retryConfig.maxRetryDelay);
+        // Handle retryable auth failures by forcing a fresh OAuth token.
+        if (lastError.response?.status === 401) {
+          this.invalidateAccessToken();
+
+          logger.warn('Authentication failed, refreshing token before retry', {
+            attempt: attempt + 1,
+            requestId: lastError.config?.metadata?.requestId,
+          });
+
+          await this.sleep(this.calculateRetryDelay(attempt, retryConfig.retryDelay, retryConfig.maxRetryDelay));
+        } else if (lastError.response?.status === 429) {
+          // Honor the full Retry-After wait for rate limits — do NOT cap it at
+          // maxRetryDelay (that ceiling is only for exponential backoff).
+          const delay = this.parseRetryAfterMs(lastError.response.headers['retry-after']);
 
           logger.warn('Rate limit hit, waiting before retry', {
             attempt: attempt + 1,
@@ -203,9 +255,18 @@ export class HelpScoutClient {
     throw new Error('Request failed without error details');
   }
 
+  private invalidateAccessToken(): void {
+    this.accessToken = null;
+    this.tokenExpiresAt = 0;
+    this.authenticationPromise = null;
+  }
+
   private setupInterceptors(): void {
     // Request interceptor for authentication
     this.client.interceptors.request.use(async (config) => {
+      delete (config.headers as Record<string, unknown>).Authorization;
+      delete (config.headers as Record<string, unknown>).authorization;
+
       await this.ensureAuthenticated();
       if (this.accessToken) {
         config.headers.Authorization = `Bearer ${this.accessToken}`;
@@ -275,21 +336,44 @@ export class HelpScoutClient {
   private async authenticate(): Promise<void> {
     try {
       // OAuth2 Client Credentials flow (only supported method)
-      const clientId = config.helpscout.clientId;
-      const clientSecret = config.helpscout.clientSecret;
+      const currentApiKey = process.env.HELPSCOUT_API_KEY || '';
+      const clientId = process.env.HELPSCOUT_APP_ID ||
+        process.env.HELPSCOUT_CLIENT_ID ||
+        (currentApiKey.startsWith('Bearer ') ? '' : currentApiKey) ||
+        config.helpscout.clientId;
+      const clientSecret = process.env.HELPSCOUT_APP_SECRET ||
+        process.env.HELPSCOUT_CLIENT_SECRET ||
+        config.helpscout.clientSecret;
 
       if (!clientId || !clientSecret) {
         throw new Error(
           'OAuth2 authentication required. Help Scout API only supports OAuth2 Client Credentials flow.\n' +
-          'Set HELPSCOUT_CLIENT_ID and HELPSCOUT_CLIENT_SECRET (or use legacy HELPSCOUT_API_KEY and HELPSCOUT_APP_SECRET)'
+          'Set HELPSCOUT_APP_ID and HELPSCOUT_APP_SECRET. HELPSCOUT_CLIENT_ID and HELPSCOUT_CLIENT_SECRET are also supported.'
         );
       }
 
-      const response = await axios.post('https://api.helpscout.net/v2/oauth2/token', {
+      const configuredBaseUrl = this.client.defaults.baseURL || config.helpscout.baseUrl;
+      const baseUrl = configuredBaseUrl.endsWith('/')
+        ? configuredBaseUrl
+        : `${configuredBaseUrl}/`;
+      const tokenUrl = new URL('oauth2/token', baseUrl).toString();
+      const authRetryConfig: RetryConfig = {
+        ...this.defaultRetryConfig,
+        retryCondition: (error) =>
+          error.response?.status !== 401 &&
+          Boolean(this.defaultRetryConfig.retryCondition?.(error)),
+      };
+
+      const response = await this.executeWithRetry(() => axios.post(tokenUrl, {
         grant_type: 'client_credentials',
         client_id: clientId,
         client_secret: clientSecret,
-      });
+      }, {
+        timeout: 30000,
+        httpAgent: this.httpAgent,
+        httpsAgent: this.httpsAgent,
+        validateStatus: (status) => status >= 200 && status < 300,
+      }), authRetryConfig);
 
       this.accessToken = response.data.access_token;
       this.tokenExpiresAt = Date.now() + (response.data.expires_in * 1000) - 60000; // 1 minute buffer
@@ -315,13 +399,13 @@ export class HelpScoutClient {
     });
 
     if (error.response?.status === 401) {
-      this.accessToken = null; // Force re-authentication
+      this.invalidateAccessToken(); // Force re-authentication
       return {
         code: 'UNAUTHORIZED',
         message: 'Help Scout authentication failed. Please check your API credentials.',
         details: {
           requestId,
-          suggestion: 'Verify HELPSCOUT_CLIENT_ID and HELPSCOUT_CLIENT_SECRET are valid',
+          suggestion: 'Verify HELPSCOUT_APP_ID and HELPSCOUT_APP_SECRET are valid. HELPSCOUT_CLIENT_ID and HELPSCOUT_CLIENT_SECRET are also supported.',
         },
       };
     }
@@ -349,7 +433,7 @@ export class HelpScoutClient {
     }
 
     if (error.response?.status === 429) {
-      const retryAfter = parseInt(error.response.headers['retry-after'] || '60', 10);
+      const retryAfter = Math.ceil(this.parseRetryAfterMs(error.response.headers['retry-after']) / 1000);
       return {
         code: 'RATE_LIMIT',
         message: `Help Scout API rate limit exceeded. Please wait ${retryAfter} seconds before retrying.`,
@@ -424,17 +508,25 @@ export class HelpScoutClient {
 
   async get<T>(endpoint: string, params?: Record<string, unknown>, cacheOptions?: { ttl?: number }): Promise<T> {
     const cacheKey = `GET:${endpoint}`;
-    const cachedResult = cache.get<T>(cacheKey, params);
-    
-    if (cachedResult) {
-      return cachedResult;
+    const bypassCache = cacheOptions?.ttl !== undefined && cacheOptions.ttl <= 0;
+
+    if (!bypassCache) {
+      const cachedResult = cache.get<T>(cacheKey, params);
+      
+      if (cachedResult) {
+        return cachedResult;
+      }
     }
 
     const response = await this.executeWithRetry<T>(() => 
       this.client.get<T>(endpoint, { params })
     );
+
+    if (bypassCache) {
+      return response.data;
+    }
     
-    if (cacheOptions?.ttl || cacheOptions?.ttl === 0) {
+    if (cacheOptions?.ttl !== undefined) {
       cache.set(cacheKey, params, response.data, { ttl: cacheOptions.ttl });
     } else {
       // Default cache TTL based on endpoint
@@ -553,8 +645,19 @@ export class HelpScoutClient {
     };
   }
 
+  async getRaw<T>(endpoint: string, params?: Record<string, unknown>, options: RawGetOptions = {}): Promise<AxiosResponse<T>> {
+    return this.executeWithRetry<T>(() =>
+      this.client.get<T>(endpoint, {
+        params,
+        responseType: options.responseType,
+        headers: options.headers,
+      })
+    );
+  }
+
   private getDefaultCacheTtl(endpoint: string): number {
     if (endpoint.includes('/conversations')) return 300; // 5 minutes
+    if (endpoint.includes('/saved-replies')) return 300; // 5 minutes
     if (endpoint.includes('/mailboxes')) return 86400; // 24 hours
     if (endpoint.includes('/threads')) return 300; // 5 minutes
     return 300; // Default 5 minutes
@@ -568,6 +671,10 @@ export class HelpScoutClient {
       logger.error('Connection test failed', { error: error instanceof Error ? error.message : String(error) });
       return false;
     }
+  }
+
+  private countAgentBucketEntries(buckets: { [key: string]: readonly unknown[] | undefined }): number {
+    return Object.values(buckets).reduce((total, entries) => total + (entries?.length ?? 0), 0);
   }
 
   /**
@@ -587,14 +694,14 @@ export class HelpScoutClient {
   } {
     return {
       http: {
-        sockets: Object.keys(this.httpAgent.sockets).length,
-        freeSockets: Object.keys(this.httpAgent.freeSockets).length,
-        pending: Object.keys(this.httpAgent.requests).length,
+        sockets: this.countAgentBucketEntries(this.httpAgent.sockets),
+        freeSockets: this.countAgentBucketEntries(this.httpAgent.freeSockets),
+        pending: this.countAgentBucketEntries(this.httpAgent.requests),
       },
       https: {
-        sockets: Object.keys(this.httpsAgent.sockets).length,
-        freeSockets: Object.keys(this.httpsAgent.freeSockets).length,
-        pending: Object.keys(this.httpsAgent.requests).length,
+        sockets: this.countAgentBucketEntries(this.httpsAgent.sockets),
+        freeSockets: this.countAgentBucketEntries(this.httpsAgent.freeSockets),
+        pending: this.countAgentBucketEntries(this.httpsAgent.requests),
       },
     };
   }
@@ -616,35 +723,34 @@ export class HelpScoutClient {
     logger.info('All HTTP connections closed');
   }
 
+  private closeIdleSockets(agent: HttpAgent | HttpsAgent): number {
+    let closed = 0;
+    const freeSockets = agent.freeSockets as Record<string, Array<{ destroy: () => void }>>;
+
+    for (const [socketKey, sockets] of Object.entries(freeSockets)) {
+      for (const socket of sockets || []) {
+        socket.destroy();
+        closed++;
+      }
+      delete freeSockets[socketKey];
+    }
+
+    return closed;
+  }
+
   /**
    * Clear idle connections to free up resources
    */
   clearIdleConnections(): void {
     const stats = this.getPoolStats();
-    
-    // Force destroy all agent connections by recreating them
-    this.httpAgent.destroy();
-    this.httpsAgent.destroy();
-    
-    // Recreate agents with same configuration
-    const poolConfig = {
-      keepAlive: true,
-      keepAliveMsecs: 1000,
-      maxSockets: 50,
-      maxFreeSockets: 10,
-      timeout: 30000,
-    };
-    
-    this.httpAgent = new HttpAgent(poolConfig);
-    this.httpsAgent = new HttpsAgent(poolConfig);
-
-    // Update Axios instance to use the new agents
-    this.client.defaults.httpAgent = this.httpAgent;
-    this.client.defaults.httpsAgent = this.httpsAgent;
+    const clearedHttp = this.closeIdleSockets(this.httpAgent);
+    const clearedHttps = this.closeIdleSockets(this.httpsAgent);
 
     logger.debug('Cleared idle connections', {
-      clearedHttp: stats.http.freeSockets,
-      clearedHttps: stats.https.freeSockets,
+      clearedHttp,
+      clearedHttps,
+      activeHttp: stats.http.sockets,
+      activeHttps: stats.https.sockets,
     });
   }
 
