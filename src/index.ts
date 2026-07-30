@@ -14,6 +14,7 @@ import { logger } from './utils/logger.js';
 import { helpScoutClient, type PaginatedResponse } from './utils/helpscout-client.js';
 import { resourceHandler } from './resources/index.js';
 import { gatewayHandler } from './tools/gateway.js';
+import { writeGatewayHandler } from './tools/write-gateway.js';
 import { promptHandler } from './prompts/index.js';
 import type { Inbox } from './schema/types.js';
 import { createMcpResourceError } from './utils/mcp-errors.js';
@@ -195,8 +196,13 @@ Note: Inbox auto-discovery failed (${safeError}). Run the listAllInboxes operati
     this.server.setRequestHandler(ListToolsRequestSchema, async () => {
       logger.debug('Listing tools');
       try {
+        // Advertise the read gateway (3 tools) plus, when writes are enabled,
+        // the single write_help_scout gateway tool.
         return {
-          tools: await gatewayHandler.listTools(),
+          tools: [
+            ...await gatewayHandler.listTools(),
+            ...await writeGatewayHandler.listTools(),
+          ],
         };
       } catch (error) {
         logger.error('Error listing tools', { error: error instanceof Error ? error.message : String(error) });
@@ -225,6 +231,11 @@ Note: Inbox auto-discovery failed (${safeError}). Run the listAllInboxes operati
           },
         }
         : request;
+      // Route write_help_scout and direct write-operation calls to the write
+      // gateway; everything else goes to the read gateway.
+      if (writeGatewayHandler.handles(request.params.name)) {
+        return await writeGatewayHandler.callTool(requestForTool);
+      }
       return await gatewayHandler.callTool(requestForTool);
     });
 

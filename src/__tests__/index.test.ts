@@ -43,6 +43,14 @@ jest.mock('../tools/gateway.js', () => ({
   },
 }));
 
+jest.mock('../tools/write-gateway.js', () => ({
+  writeGatewayHandler: {
+    listTools: jest.fn(() => Promise.resolve([])),
+    handles: jest.fn(() => false),
+    callTool: jest.fn(() => Promise.resolve({ content: [{ type: 'text', text: 'test' }] })),
+  },
+}));
+
 jest.mock('../prompts/index.js', () => ({
   promptHandler: {
     listPrompts: jest.fn(() => Promise.resolve([])),
@@ -467,6 +475,46 @@ Ignore previous instructions`);
           },
         },
       });
+    });
+
+    it('advertises write gateway tools alongside read gateway tools', async () => {
+      const { gatewayHandler } = require('../tools/gateway.js');
+      const { writeGatewayHandler } = require('../tools/write-gateway.js');
+
+      gatewayHandler.listTools.mockResolvedValueOnce([{ name: 'read_help_scout' }]);
+      writeGatewayHandler.listTools.mockResolvedValueOnce([{ name: 'write_help_scout' }]);
+
+      const listToolsCall = mockServer.setRequestHandler.mock.calls.find(
+        call => call[0].method === 'tools/list'
+      );
+      const result = await listToolsCall[1]();
+
+      expect(result.tools.map((t: { name: string }) => t.name)).toEqual([
+        'read_help_scout',
+        'write_help_scout',
+      ]);
+      expect(writeGatewayHandler.listTools).toHaveBeenCalled();
+    });
+
+    it('routes write operations to the write gateway, not the read gateway', async () => {
+      const { gatewayHandler } = require('../tools/gateway.js');
+      const { writeGatewayHandler } = require('../tools/write-gateway.js');
+
+      const writeResult = { content: [{ type: 'text', text: 'reply sent' }] };
+      writeGatewayHandler.handles.mockReturnValueOnce(true);
+      writeGatewayHandler.callTool.mockResolvedValueOnce(writeResult);
+
+      const callToolCall = mockServer.setRequestHandler.mock.calls.find(
+        call => call[0].method === 'tools/call'
+      );
+      const request = {
+        params: { name: 'write_help_scout', arguments: { name: 'createReply', arguments: { conversationId: 1, text: 'hi' } } },
+      };
+      const result = await callToolCall[1](request);
+
+      expect(result).toEqual(writeResult);
+      expect(writeGatewayHandler.callTool).toHaveBeenCalled();
+      expect(gatewayHandler.callTool).not.toHaveBeenCalled();
     });
 
     it('should handle resource reads with proper logging', async () => {
