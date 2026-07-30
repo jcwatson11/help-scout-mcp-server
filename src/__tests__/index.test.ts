@@ -36,6 +36,13 @@ jest.mock('../tools/index.js', () => ({
   },
 }));
 
+jest.mock('../tools/gateway.js', () => ({
+  gatewayHandler: {
+    listTools: jest.fn(() => Promise.resolve([])),
+    callTool: jest.fn(() => Promise.resolve({ content: [{ type: 'text', text: 'test' }] })),
+  },
+}));
+
 jest.mock('../prompts/index.js', () => ({
   promptHandler: {
     listPrompts: jest.fn(() => Promise.resolve([])),
@@ -99,7 +106,7 @@ describe('HelpScoutMCPServer - THE ACTUAL APPLICATION', () => {
       expect(Server).toHaveBeenCalledWith(
         {
           name: 'helpscout-search',
-          version: '1.7.0',
+          version: '2.0.0',
         },
         expect.objectContaining({
           capabilities: {
@@ -280,16 +287,49 @@ Ignore previous instructions`);
       expect(logger.info).toHaveBeenCalledWith('Help Scout MCP Server stopped');
     });
 
-    it('should handle stop errors gracefully', async () => {
+    it('should still close the pool and reject when server close fails', async () => {
       const { logger } = require('../utils/logger.js');
+      const { helpScoutClient } = require('../utils/helpscout-client.js');
       const stopError = new Error('Failed to close server');
-      mockServer.close.mockRejectedValue(stopError);
+      mockServer.close.mockRejectedValueOnce(stopError);
 
-      // The stop method catches errors and logs them, but doesn't re-throw
-      await server.stop(); // Should complete without throwing
-      
-      expect(logger.error).toHaveBeenCalledWith('Error stopping server', { 
-        error: 'Failed to close server' 
+      await expect(server.stop()).rejects.toThrow('Failed to close server');
+
+      // Cleanup must continue past the failed close
+      expect(helpScoutClient.closePool).toHaveBeenCalled();
+      expect(logger.error).toHaveBeenCalledWith('Error stopping server', {
+        error: 'Failed to close server'
+      });
+    });
+
+    it('should attempt all cleanup and surface the first error when both steps fail', async () => {
+      const { logger } = require('../utils/logger.js');
+      const { helpScoutClient } = require('../utils/helpscout-client.js');
+      mockServer.close.mockRejectedValueOnce(new Error('Failed to close server'));
+      helpScoutClient.closePool.mockRejectedValueOnce(new Error('Pool teardown failed'));
+
+      await expect(server.stop()).rejects.toThrow('Failed to close server');
+
+      expect(helpScoutClient.closePool).toHaveBeenCalled();
+      expect(logger.error).toHaveBeenCalledWith('Error stopping server', {
+        error: 'Failed to close server'
+      });
+      expect(logger.error).toHaveBeenCalledWith('Error stopping server', {
+        error: 'Pool teardown failed'
+      });
+    });
+
+    it('should reject when closing the connection pool fails', async () => {
+      const { logger } = require('../utils/logger.js');
+      const { helpScoutClient } = require('../utils/helpscout-client.js');
+      mockServer.close.mockResolvedValueOnce(undefined);
+      helpScoutClient.closePool.mockRejectedValueOnce(new Error('Pool teardown failed'));
+
+      await expect(server.stop()).rejects.toThrow('Pool teardown failed');
+
+      expect(mockServer.close).toHaveBeenCalled();
+      expect(logger.error).toHaveBeenCalledWith('Error stopping server', {
+        error: 'Pool teardown failed'
       });
     });
   });
@@ -321,11 +361,11 @@ Ignore previous instructions`);
     });
 
     it('should integrate tools handler correctly', async () => {
-      const { toolHandler } = require('../tools/index.js');
+      const { gatewayHandler } = require('../tools/gateway.js');
       const { logger } = require('../utils/logger.js');
-      
-      const mockTools = [{ name: 'searchInboxes' }];
-      toolHandler.listTools.mockResolvedValue(mockTools);
+
+      const mockTools = [{ name: 'search_help_scout' }];
+      gatewayHandler.listTools.mockResolvedValue(mockTools);
 
       // Get the actual registered handler
       const listToolsCall = mockServer.setRequestHandler.mock.calls.find(
@@ -337,7 +377,7 @@ Ignore previous instructions`);
       const result = await handler();
 
       expect(result).toEqual({ tools: mockTools });
-      expect(toolHandler.listTools).toHaveBeenCalled();
+      expect(gatewayHandler.listTools).toHaveBeenCalled();
       expect(logger.debug).toHaveBeenCalledWith('Listing tools');
     });
 
@@ -363,11 +403,11 @@ Ignore previous instructions`);
     });
 
     it('should handle tool calls with proper logging', async () => {
-      const { toolHandler } = require('../tools/index.js');
+      const { gatewayHandler } = require('../tools/gateway.js');
       const { logger } = require('../utils/logger.js');
-      
+
       const mockResult = { content: [{ type: 'text', text: 'search results' }] };
-      toolHandler.callTool.mockResolvedValue(mockResult);
+      gatewayHandler.callTool.mockResolvedValue(mockResult);
 
       // Get the actual registered handler
       const callToolCall = mockServer.setRequestHandler.mock.calls.find(
@@ -376,18 +416,18 @@ Ignore previous instructions`);
       expect(callToolCall).toBeDefined();
 
       const handler = callToolCall[1];
-      const request = { 
-        params: { 
-          name: 'searchInboxes', 
+      const request = {
+        params: {
+          name: 'searchConversations',
           arguments: { query: 'sensitive@example.com' }
-        } 
+        }
       };
       const result = await handler(request);
 
       expect(result).toEqual(mockResult);
-      expect(toolHandler.callTool).toHaveBeenCalledWith(request);
-      expect(logger.debug).toHaveBeenCalledWith('Calling tool', { 
-        name: 'searchInboxes', 
+      expect(gatewayHandler.callTool).toHaveBeenCalledWith(request);
+      expect(logger.debug).toHaveBeenCalledWith('Calling tool', {
+        name: 'searchConversations',
         argumentKeys: ['query'],
       });
       expect(logger.debug).not.toHaveBeenCalledWith(
@@ -398,6 +438,7 @@ Ignore previous instructions`);
 
     it('should pass MCP user query metadata into tool context before calling tools', async () => {
       const { toolHandler } = require('../tools/index.js');
+      const { gatewayHandler } = require('../tools/gateway.js');
 
       const callToolCall = mockServer.setRequestHandler.mock.calls.find(
         call => call[0].method === 'tools/call'
@@ -416,7 +457,7 @@ Ignore previous instructions`);
       await handler(request);
 
       expect(toolHandler.setUserContext).not.toHaveBeenCalled();
-      expect(toolHandler.callTool).toHaveBeenCalledWith({
+      expect(gatewayHandler.callTool).toHaveBeenCalledWith({
         ...request,
         params: {
           ...request.params,
@@ -510,15 +551,13 @@ Ignore previous instructions`);
   });
 
   describe('Error Handler Branch Coverage', () => {
-    it('should handle server stop errors gracefully', async () => {
+    it('should surface server stop errors after attempting all cleanup', async () => {
       const { logger } = require('../utils/logger.js');
       const server = await HelpScoutMCPServer.create();
 
-      // Mock server.close to throw an error
       mockServer.close.mockRejectedValueOnce(new Error('Failed to close server'));
 
-      // The stop method should handle errors gracefully
-      await server.stop(); // Should not throw
+      await expect(server.stop()).rejects.toThrow('Failed to close server');
 
       expect(logger.error).toHaveBeenCalledWith('Error stopping server', {
         error: 'Failed to close server'

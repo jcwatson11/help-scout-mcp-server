@@ -1,227 +1,95 @@
-# HelpScout MCP Tool Reference
+# Help Scout MCP Tool Reference
 
-Complete parameter documentation for all 17 HelpScout MCP tools.
+Core workflow reference for the most common Help Scout MCP tools.
+
+As of v2.0.0 the server advertises three tools (`search_help_scout`, `describe_help_scout`, `read_help_scout`) over a registry of 55 read-only operations. Discover operations with `search_help_scout`, load schemas with `describe_help_scout`, and execute with `read_help_scout`. Operation names in the current registry still dispatch directly for compatibility; names consolidated away in v2.0.0 (searchInboxes, comprehensiveConversationSearch, structuredConversationFilter, advancedConversationSearch) do not, and their capabilities live in `listAllInboxes` and `searchConversations`. New work should go through the gateway.
 
 ---
 
-## 1. searchInboxes
+## 1. searchConversations
 
-**Purpose:** Get inbox ID from name. ALWAYS call this first when user mentions an inbox.
+**Purpose:** The single conversation search and list operation. Handles keyword search, listing, ticket-number lookup, and every filter combination.
+
+**Default:** Searches active + pending + closed (spam excluded). No status parameter needed for complete results.
 
 **Parameters:**
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `query` | string | yes | - | Inbox name to search for (case-insensitive) |
-| `limit` | number | no | 50 | Max results (1-100) |
-| `cursor` | string | no | - | Pagination cursor |
-
-**Returns:** Array of inbox objects with `id` (numeric), `name`, `email`, timestamps
-
-**Example:**
-```javascript
-searchInboxes({ query: "support" })
-// Returns: [{ id: 359402, name: "Support", email: "support@company.com" }]
-```
-
----
-
-## 2. listAllInboxes
-
-**Purpose:** List all available inboxes. Quick helper for discovery.
-
-**Parameters:**
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `limit` | number | no | 100 | Max results (1-100) |
-
-**Returns:** Array of all inbox objects
-
-**Example:**
-```javascript
-listAllInboxes({ limit: 50 })
-```
-
----
-
-## 3. searchConversations
-
-**Purpose:** List tickets by time/status. Simple listing without keywords.
-
-**WARNING:** When `query` or `tag` is provided without explicit `status`, defaults to "active" only! Use `comprehensiveConversationSearch` for keyword searches across all statuses.
-
-**Parameters:**
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `query` | string | no | - | HelpScout query syntax (body, subject, email) |
-| `status` | string | no | * | active, pending, closed, spam (**NOT** "all" - use `structuredConversationFilter` for all statuses) |
-| `inboxId` | string | no | - | Scope to specific inbox (numeric ID as string) |
-| `tag` | string | no | - | Filter by tag name |
-| `createdAfter` | string | no | - | ISO8601 date |
-| `createdBefore` | string | no | - | ISO8601 date** |
-| `sort` | string | no | "createdAt" | createdAt, updatedAt, number |
-| `order` | string | no | "desc" | asc, desc |
-| `limit` | number | no | 50 | Max results (1-100) |
-| `cursor` | string | no | - | Pagination cursor |
-| `fields` | array | no | - | Specific fields to return (partial response) |
-
-*Status default: "active" when query/tag provided; all statuses otherwise
-
-**createdBefore is filtered client-side (HelpScout API limitation) - pagination totals may not reflect filtered results
-
-**When to use:**
-- Listing recent tickets (no keyword search)
-- Filtering by explicit status
-- Time-based queries
-
-**When NOT to use:**
-- Keyword searches (use `comprehensiveConversationSearch`)
-- Finding tickets across all statuses (use `structuredConversationFilter` with `sortBy: "waitingSince"` and `status: "all"`)
-- **NEVER** use `status: "all"` with this tool - it only accepts active/pending/closed/spam
-
-**Example:**
-```javascript
-searchConversations({
-  inboxId: "359402",
-  status: "active",
-  sort: "createdAt",
-  order: "desc",
-  limit: 20
-})
-```
-
----
-
-## 4. comprehensiveConversationSearch
-
-**Purpose:** Keyword search across all statuses. PREFERRED for content searches.
-
-**Parameters:**
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `searchTerms` | string[] | yes | - | Keywords to search (OR combined) |
-| `inboxId` | string | no | - | Scope to specific inbox |
-| `statuses` | string[] | no | ["active","pending","closed"] | Statuses to search |
-| `searchIn` | string[] | no | ["both"] | body, subject, or both |
-| `timeframeDays` | number | no | 60 | Days back to search (1-365) |
-| `createdAfter` | string | no | - | Override timeframeDays |
-| `createdBefore` | string | no | - | End date |
-| `limitPerStatus` | number | no | 25 | Results per status (1-100) |
-| `includeVariations` | boolean | no | true | Include term variations |
-
-**Why this is preferred:**
-- Searches all statuses by default
-- Returns organized results grouped by status
-- Executes parallel searches for performance
-
-**Note:** `createdBefore` is filtered client-side (API limitation) - pagination totals may not reflect filtered results.
-
-**Example:**
-```javascript
-comprehensiveConversationSearch({
-  searchTerms: ["billing", "refund"],
-  inboxId: "359402",
-  timeframeDays: 30
-})
-```
-
----
-
-## 5. advancedConversationSearch
-
-**Purpose:** Complex filters with email domains, tags, and boolean logic.
-
-**Parameters:**
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `emailDomain` | string | no | - | Filter by domain (e.g., "company.com") |
-| `customerEmail` | string | no | - | Exact email match |
-| `contentTerms` | string[] | no | - | Search in body (OR combined) |
-| `subjectTerms` | string[] | no | - | Search in subject (OR combined) |
-| `tags` | string[] | no | - | Tag names (OR combined) |
-| `inboxId` | string | no | - | Scope to inbox |
-| `status` | string | no | - | active, pending, closed, spam |
-| `createdAfter` | string | no | - | ISO8601 date |
-| `createdBefore` | string | no | - | ISO8601 date |
-| `limit` | number | no | 50 | Max results (1-100) |
-
-**Use cases:**
-- "Find all tickets from @acme.com"
-- "Tickets with urgent AND billing tags"
-- "Separate content and subject searches"
-
-**Note:** `createdBefore` is filtered client-side (API limitation).
-
-**Example:**
-```javascript
-advancedConversationSearch({
-  emailDomain: "acme.com",
-  tags: ["urgent"],
-  status: "active"
-})
-```
-
----
-
-## 6. structuredConversationFilter
-
-**Purpose:** ID-based lookups and ticket number queries. Use AFTER discovery.
-
-**Parameters:**
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
+| `contentTerms` | string[] | no | - | Match terms in message body (OR combined) |
+| `subjectTerms` | string[] | no | - | Match terms in subject (OR combined) |
+| `email` | string | no | - | Conversations involving this email (to/cc/bcc or customer) |
+| `emailDomain` | string | no | - | Conversations involving any email at this domain |
+| `customerIds` | number[] | no | - | Conversations belonging to these customer IDs |
+| `hasAttachments` | boolean | no | - | Only conversations with attachments |
 | `conversationNumber` | number | no | - | Direct ticket # lookup |
-| `assignedTo` | number | no | - | User ID (-1 for unassigned) |
-| `customerIds` | number[] | no | - | Customer IDs (max 100) |
-| `folderId` | number | no | - | Folder ID |
-| `inboxId` | string | no | - | Inbox ID |
-| `tag` | string | no | - | Tag name |
-| `status` | string | no | "all" | active, pending, closed, spam, all |
-| `sortBy` | string | no | "createdAt" | See options below |
-| `sortOrder` | string | no | "desc" | asc, desc |
+| `assignedTo` | number | no | - | Assignee user ID (-1 for unassigned) |
+| `inboxId` | string | no | - | Inbox ID from server instructions |
+| `folderId` | number | no | - | Filter by folder ID |
+| `tag` | string | no | - | Tag name (comma-separated for multiple) |
+| `status` | string | no | * | active, pending, closed, open, spam, all |
 | `createdAfter` | string | no | - | ISO8601 date |
 | `createdBefore` | string | no | - | ISO8601 date |
 | `modifiedSince` | string | no | - | ISO8601 date |
-| `limit` | number | no | 50 | Max results (1-100) |
-| `cursor` | string | no | - | Pagination |
+| `sort` | string | no | "createdAt" | createdAt, modifiedAt, number, waitingSince, customerName, customerEmail, mailboxid, status, subject, score |
+| `order` | string | no | "desc" | asc, desc |
+| `limit` | number | no | 50 | Max results (1-200) |
+| `page` | number | no | 1 | Page number |
+| `query` | string | no | - | Raw HelpScout query syntax (power users); convenience filters compile into this |
+| `fields` | array | no | - | Specific fields to return (partial response) |
 
-**Sort options:** createdAt, modifiedAt, number, waitingSince, customerName, customerEmail, mailboxId, status, subject
+*Status default: active + pending + closed. Pass `status: "all"` to include spam, or a single status to narrow.
 
-**REQUIREMENT:** Must provide at least ONE of these unique fields:
-- `conversationNumber` (direct ticket lookup)
-- `assignedTo` (user ID or -1 for unassigned)
-- `folderId`
-- `customerIds`
-- `sortBy` with unique value: `waitingSince`, `customerName`, or `customerEmail`
-
-**Without a unique field, this tool will fail.** Use `comprehensiveConversationSearch` for content-based searches.
-
-**Note:** `createdBefore` is filtered client-side (API limitation) - pagination totals may not reflect filtered results.
-
-**Example:**
+**Examples:**
 ```javascript
-// Direct ticket lookup
-structuredConversationFilter({ conversationNumber: 42839 })
-
-// Customer history
-structuredConversationFilter({
-  customerIds: [12345],
-  sortBy: "createdAt",
-  sortOrder: "desc"
+// Keyword search (all working statuses by default)
+read_help_scout({
+  name: "searchConversations",
+  arguments: { contentTerms: ["billing", "refund"], inboxId: "359402" }
 })
 
-// List ALL recent tickets (all statuses)
-// This is how you get status: "all" - requires unique sortBy
-structuredConversationFilter({
-  sortBy: "waitingSince",  // Required: unique sortBy enables status: "all"
-  status: "all",
-  sortOrder: "desc",
-  limit: 50
+// List recent tickets
+read_help_scout({
+  name: "searchConversations",
+  arguments: { inboxId: "359402", sort: "createdAt", order: "desc", limit: 20 }
+})
+
+// Direct ticket lookup
+read_help_scout({ name: "searchConversations", arguments: { conversationNumber: 42839 } })
+
+// Customer history
+read_help_scout({
+  name: "searchConversations",
+  arguments: { customerIds: [12345], sort: "createdAt", order: "desc" }
+})
+
+// Domain + tag filter
+read_help_scout({
+  name: "searchConversations",
+  arguments: { emailDomain: "acme.com", tag: "urgent", status: "active" }
 })
 ```
 
 ---
 
-## 7. getConversationSummary
+## 2. getConversation
+
+**Purpose:** Get the raw Help Scout conversation object by ID. Use `getThreads` instead when you need paginated full message history.
+
+**Parameters:**
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `conversationId` | string | yes | - | The conversation ID |
+| `embed` | string | no | - | "threads" to embed threads in the same call |
+| `includeSystemActors` | boolean | no | false | Route via v3 to distinguish user, team, and system_user person types |
+
+**Example:**
+```javascript
+read_help_scout({ name: "getConversation", arguments: { conversationId: "12345678", embed: "threads" } })
+```
+
+---
+
+## 3. getConversationSummary
 
 **Purpose:** Quick overview with first customer message + latest staff reply.
 
@@ -230,21 +98,18 @@ structuredConversationFilter({
 |-----------|------|----------|---------|-------------|
 | `conversationId` | string | yes | - | Numeric conversation ID from search results |
 
-**Returns:**
-- Conversation metadata
-- First customer message
-- Latest staff reply
+**Returns:** Conversation metadata, first customer message, latest staff reply.
 
 **Note:** Content is visible by default. Set `REDACT_MESSAGE_CONTENT=true` to replace message bodies with placeholders.
 
 **Example:**
 ```javascript
-getConversationSummary({ conversationId: "12345678" })
+read_help_scout({ name: "getConversationSummary", arguments: { conversationId: "12345678" } })
 ```
 
 ---
 
-## 8. getThreads
+## 4. getThreads
 
 **Purpose:** Full message history for a conversation.
 
@@ -253,40 +118,81 @@ getConversationSummary({ conversationId: "12345678" })
 |-----------|------|----------|---------|-------------|
 | `conversationId` | string | yes | - | Numeric conversation ID from search results |
 | `limit` | number | no | 200 | Max threads (1-200) |
-| `cursor` | string | no | - | Pagination |
+| `page` | number | no | 1 | Page number |
+| `includeSystemActors` | boolean | no | false | Route via v3 to distinguish user, team, and system_user person types |
 
-**Returns:** All threads with metadata, source info, creator/customer details
+**Returns:** All threads with metadata, source info, creator/customer details.
 
 **Note:** Content is visible by default. Set `REDACT_MESSAGE_CONTENT=true` to replace message bodies with placeholders.
 
 **Example:**
 ```javascript
-getThreads({ conversationId: "12345678", limit: 200 })
+read_help_scout({ name: "getThreads", arguments: { conversationId: "12345678", limit: 200 } })
 ```
 
 ---
 
-## 9. getServerTime
+## 5. getServerTime
 
-**Purpose:** Get current server timestamp for time-relative calculations.
+**Purpose:** Get current server timestamp. Call before date-relative searches ("last week", "past 30 days") to calculate time ranges.
 
 **Parameters:** None
 
 **Returns:**
 ```javascript
 {
-  isoTime: "2024-01-15T10:30:00Z",
-  unixTime: 1705315800
+  isoTime: "2026-07-28T10:30:00Z",
+  unixTime: 1785321000
 }
 ```
 
-**Use case:** Reference for time-relative searches, debugging timestamp issues.
+**Example:**
+```javascript
+read_help_scout({ name: "getServerTime", arguments: {} })
+```
 
 ---
 
-## 10. listCustomers
+## 6. listAllInboxes
 
-**Purpose:** Browse and search customers by name, query syntax, or modification date. Page-based pagination (v2 API).
+**Purpose:** List inboxes with IDs, optionally filtered by name. Usually unnecessary: inboxes are auto-discovered at connect and listed with their IDs in the server instructions. Only call this if inboxes changed mid-session.
+
+**Parameters:**
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `nameContains` | string | no | - | Case-insensitive name substring filter |
+| `limit` | number | no | 100 | Max results (1-100) |
+
+**Returns:** Array of inbox objects with `id` (numeric), `name`, `email`, timestamps
+
+**Example:**
+```javascript
+read_help_scout({ name: "listAllInboxes", arguments: { nameContains: "support" } })
+// Returns: [{ id: 359402, name: "Support", email: "support@company.com" }]
+```
+
+---
+
+## 7. getInbox
+
+**Purpose:** Get one inbox with optional sub-resources fanned out in a single call.
+
+**Parameters:**
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `inboxId` | string | yes | - | Inbox ID from server instructions |
+| `include` | string[] | no | - | Any of "fields" (custom fields), "folders" (folder IDs and counts), "routing" |
+
+**Example:**
+```javascript
+read_help_scout({ name: "getInbox", arguments: { inboxId: "359402", include: ["fields", "folders", "routing"] } })
+```
+
+---
+
+## 8. listCustomers
+
+**Purpose:** Browse and search customers by name, query syntax, or dates. Defaults to v2 page-based pagination; set `useV3` (or pass a `cursor`) for the v3 API with cursor pagination, which also enables the `email` and `createdSince` filters.
 
 **Parameters:**
 | Parameter | Type | Required | Default | Description |
@@ -294,24 +200,26 @@ getThreads({ conversationId: "12345678", limit: 200 })
 | `firstName` | string | no | - | Filter by first name |
 | `lastName` | string | no | - | Filter by last name |
 | `query` | string | no | - | Advanced query syntax |
-| `mailbox` | number | no | - | Filter by mailbox ID |
+| `mailbox` | number | no | - | Filter by inbox ID (v2 path only) |
 | `modifiedSince` | string | no | - | ISO 8601 date |
-| `page` | number | no | 1 | Page number |
-| `sortField` | enum | no | createdAt | createdAt, firstName, lastName, modifiedAt |
-| `sortOrder` | enum | no | desc | asc, desc |
-
-**Returns:** Array of customer objects with id, name, org, email, conversationCount
+| `sortField` | enum | no | createdAt | createdAt, firstName, lastName, modifiedAt (v2 path only) |
+| `sortOrder` | enum | no | desc | asc, desc (v2 path only) |
+| `page` | number | no | 1 | Page number (v2 path, 50 per page) |
+| `useV3` | boolean | no | false | Route to the v3 endpoint (cursor pagination) |
+| `cursor` | string | no | - | v3 pagination cursor; supplying it forces the v3 path |
+| `email` | string | no | - | Filter by email (v3 path only) |
+| `createdSince` | string | no | - | ISO 8601 date (v3 path only) |
 
 **Example:**
 ```javascript
-listCustomers({ firstName: "Jane", sortField: "createdAt", sortOrder: "desc" })
+read_help_scout({ name: "listCustomers", arguments: { firstName: "Jane", sortField: "createdAt", sortOrder: "desc" } })
 ```
 
 ---
 
-## 11. searchCustomersByEmail
+## 9. searchCustomersByEmail
 
-**Purpose:** Find a customer by exact email address using v3 API with cursor pagination.
+**Purpose:** Find a customer by exact email address using the v3 API with cursor pagination.
 
 **Parameters:**
 | Parameter | Type | Required | Default | Description |
@@ -328,12 +236,12 @@ listCustomers({ firstName: "Jane", sortField: "createdAt", sortOrder: "desc" })
 
 **Example:**
 ```javascript
-searchCustomersByEmail({ email: "jane@acme.com" })
+read_help_scout({ name: "searchCustomersByEmail", arguments: { email: "jane@acme.com" } })
 ```
 
 ---
 
-## 12. getCustomer
+## 10. getCustomer
 
 **Purpose:** Get a full customer profile by ID. Returns profile with embedded contact details (emails, phones, chats, social profiles, websites) plus address from a separate lookup.
 
@@ -342,18 +250,16 @@ searchCustomersByEmail({ email: "jane@acme.com" })
 |-----------|------|----------|---------|-------------|
 | `customerId` | string | yes | - | Numeric customer ID |
 
-**Returns:** Customer object with full profile, embedded contacts, address
-
 **Example:**
 ```javascript
-getCustomer({ customerId: "12345" })
+read_help_scout({ name: "getCustomer", arguments: { customerId: "12345" } })
 ```
 
 ---
 
-## 13. getCustomerContacts
+## 11. getCustomerContacts
 
-**Purpose:** Get all contact channels for a customer: emails, phones, chats, social profiles, websites, and address. Calls 6 sub-resource endpoints in parallel.
+**Purpose:** Get all contact channels for a customer: emails, phones, chats, social profiles, websites, and address. Calls the sub-resource endpoints in parallel; this single operation covers every contact sub-resource.
 
 **Parameters:**
 | Parameter | Type | Required | Default | Description |
@@ -364,12 +270,12 @@ getCustomer({ customerId: "12345" })
 
 **Example:**
 ```javascript
-getCustomerContacts({ customerId: "12345" })
+read_help_scout({ name: "getCustomerContacts", arguments: { customerId: "12345" } })
 ```
 
 ---
 
-## 14. listOrganizations
+## 12. listOrganizations
 
 **Purpose:** Browse all organizations with sorting options. Returns 50 per page.
 
@@ -384,12 +290,12 @@ getCustomerContacts({ customerId: "12345" })
 
 **Example:**
 ```javascript
-listOrganizations({ sortField: "conversationCount", sortOrder: "desc" })
+read_help_scout({ name: "listOrganizations", arguments: { sortField: "conversationCount", sortOrder: "desc" } })
 ```
 
 ---
 
-## 15. getOrganization
+## 13. getOrganization
 
 **Purpose:** Get an organization by ID with optional customer/conversation counts.
 
@@ -400,16 +306,14 @@ listOrganizations({ sortField: "conversationCount", sortOrder: "desc" })
 | `includeCounts` | boolean | no | true | Include customer/conversation counts |
 | `includeProperties` | boolean | no | false | Include custom properties |
 
-**Returns:** Organization object with full profile and optional counts
-
 **Example:**
 ```javascript
-getOrganization({ organizationId: "456", includeCounts: true })
+read_help_scout({ name: "getOrganization", arguments: { organizationId: "456", includeCounts: true } })
 ```
 
 ---
 
-## 16. getOrganizationMembers
+## 14. getOrganizationMembers
 
 **Purpose:** Get all customers belonging to an organization. 50 per page.
 
@@ -419,16 +323,14 @@ getOrganization({ organizationId: "456", includeCounts: true })
 | `organizationId` | string | yes | - | Numeric organization ID |
 | `page` | number | no | 1 | Page number |
 
-**Returns:** Array of customer objects in the organization
-
 **Example:**
 ```javascript
-getOrganizationMembers({ organizationId: "456" })
+read_help_scout({ name: "getOrganizationMembers", arguments: { organizationId: "456" } })
 ```
 
 ---
 
-## 17. getOrganizationConversations
+## 15. getOrganizationConversations
 
 **Purpose:** Get all conversations associated with an organization. 50 per page.
 
@@ -442,5 +344,11 @@ getOrganizationMembers({ organizationId: "456" })
 
 **Example:**
 ```javascript
-getOrganizationConversations({ organizationId: "456" })
+read_help_scout({ name: "getOrganizationConversations", arguments: { organizationId: "456" } })
 ```
+
+---
+
+## Beyond This Reference
+
+The registry also covers tags, users, teams, saved replies, attachments, original email source, workflows, webhooks, satisfaction ratings, 7 report operations, and 15 Docs operations. Discover them with `search_help_scout` and load their schemas with `describe_help_scout` (up to 10 names per call).

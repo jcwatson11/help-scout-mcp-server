@@ -2,9 +2,9 @@
   "manifest_version": "0.3",
   "name": "help-scout-mcp-server",
   "display_name": "Help Scout MCP Server",
-  "version": "1.7.0",
-  "description": "Connect Claude and other AI assistants to your Help Scout conversations, customers, organizations, and inbox data.",
-  "long_description": "Connect your AI assistant to Help Scout for customer support investigation and account-level analysis.\n\n**Search & Analysis:**\n• Advanced conversation search with query syntax\n• Multi-status search across active, pending, and closed\n• Direct ticket lookup by number\n• Customer lookup by name, email, and organization\n• Organization-level customer and conversation traversal\n• Conversation summaries and full thread retrieval\n\n**Security:**\n• OAuth2 Client Credentials authentication\n• Optional message content redaction\n• Built-in caching and rate limiting\n• Automatic retry with exponential backoff",
+  "version": "2.0.0",
+  "description": "Connect Claude to Help Scout with full read coverage: conversations, customers, organizations, reports, metadata, and Docs through a compact three-tool surface.",
+  "long_description": "Connect your AI assistant to Help Scout for read-only support investigation and account-level analysis.\n\n**How it works:**\nThe extension advertises three tools that together reach all 55 supported read operations across the Help Scout Mailbox v2 and Docs v1 APIs:\n• **search_help_scout** finds operations by intent (\"customer conversation history\", \"happiness report\")\n• **describe_help_scout** loads the full input schemas for the operations you selected\n• **read_help_scout** executes one operation with schema-matched arguments\n\n**Read coverage:**\n• Conversations: search, summaries, full threads, attachments, original email source\n• Customers and organizations: profiles, contact channels, membership, conversation history\n• Reports: company, conversations, productivity, happiness, users, channels, Docs\n• Metadata: inboxes, custom fields, folders, routing, tags, users, teams, saved replies, workflows, webhooks\n• Docs: sites, collections, categories, articles, revisions, redirects\n\n**Security:**\n• OAuth2 Client Credentials authentication\n• Read-only: no write operations are included\n• Optional message content redaction to reduce context size\n• Built-in caching and rate-limit handling",
   "author": {
     "name": "Drew Burchfield",
     "url": "https://github.com/drewburchfield"
@@ -113,429 +113,33 @@
   },
   "tools": [
     {
-      "name": "searchInboxes",
-      "description": "Search Help Scout inboxes by name"
+      "name": "search_help_scout",
+      "description": "Search 55 Help Scout read operations by user intent (conversations, customers, organizations, inboxes, users, reports, Docs articles, attachments). Returns matching operation names and descriptions."
     },
     {
-      "name": "searchConversations",
-      "description": "Search Help Scout conversations with various filters including full-text content search"
+      "name": "describe_help_scout",
+      "description": "Return the complete input schemas for selected Help Scout read operations named by search_help_scout."
     },
     {
-      "name": "getConversation",
-      "description": "Get the raw Help Scout conversation object by ID with optional embedded threads"
-    },
-    {
-      "name": "getConversationV3",
-      "description": "Get the v3 Help Scout conversation object by ID with preserved person type fields"
-    },
-    {
-      "name": "getConversationSummary",
-      "description": "Get conversation summary with first customer message and latest staff reply"
-    },
-    {
-      "name": "getThreads",
-      "description": "Retrieve all thread messages for a conversation"
-    },
-    {
-      "name": "getThreadsV3",
-      "description": "Retrieve v3 thread messages for a conversation with preserved person type fields"
-    },
-    {
-      "name": "getServerTime",
-      "description": "Get current server time for date-relative queries"
-    },
-    {
-      "name": "advancedConversationSearch",
-      "description": "Advanced conversation search with complex boolean queries and customer organization support"
-    },
-    {
-      "name": "comprehensiveConversationSearch",
-      "description": "Search conversations across multiple statuses simultaneously - automatically searches active, pending, and closed conversations"
-    },
-    {
-      "name": "listAllInboxes",
-      "description": "List all accessible inboxes with their IDs - quick helper for seeing available inboxes"
-    },
-    {
-      "name": "getInbox",
-      "description": "Get one Help Scout inbox by ID"
-    },
-    {
-      "name": "structuredConversationFilter",
-      "description": "Structural filtering by assignedTo, folderId, customerIds, conversationNumber, or advanced sorting - use after discovering IDs from content search"
-    },
-    {
-      "name": "getCustomer",
-      "description": "Get a customer profile by ID with embedded contact details and address lookup"
-    },
-    {
-      "name": "listCustomers",
-      "description": "List customers by name or advanced query syntax using the v2 Customers API"
-    },
-    {
-      "name": "listCustomersV3",
-      "description": "List customers by name, email, query syntax, or cursor using the v3 Customers API"
-    },
-    {
-      "name": "searchCustomersByEmail",
-      "description": "Search customers by email address using the cursor-based v3 Customers API"
-    },
-    {
-      "name": "getCustomerContacts",
-      "description": "Fetch customer contact sub-resources including emails, phones, chats, websites, social profiles, and address"
-    },
-    {
-      "name": "getCustomerAddress",
-      "description": "Get a Help Scout customer address by customer ID"
-    },
-    {
-      "name": "listCustomerEmails",
-      "description": "List Help Scout customer email contacts by customer ID"
-    },
-    {
-      "name": "listCustomerPhones",
-      "description": "List Help Scout customer phone contacts by customer ID"
-    },
-    {
-      "name": "listCustomerChats",
-      "description": "List Help Scout customer chat handles by customer ID"
-    },
-    {
-      "name": "listCustomerSocialProfiles",
-      "description": "List Help Scout customer social profiles by customer ID"
-    },
-    {
-      "name": "listCustomerWebsites",
-      "description": "List Help Scout customer websites by customer ID"
-    },
-    {
-      "name": "getOrganization",
-      "description": "Get an organization profile by ID with optional counts and properties"
-    },
-    {
-      "name": "listOrganizations",
-      "description": "List organizations with Help Scout's supported sort modes"
-    },
-    {
-      "name": "getOrganizationMembers",
-      "description": "List customers associated with an organization"
-    },
-    {
-      "name": "getOrganizationConversations",
-      "description": "List conversations associated with an organization"
-    },
-    {
-      "name": "listCustomerProperties",
-      "description": "List customer property definitions with slugs, types, and dropdown options"
-    },
-    {
-      "name": "listOrganizationProperties",
-      "description": "List organization property definitions with slugs, types, and dropdown options"
-    },
-    {
-      "name": "getOrganizationProperty",
-      "description": "Get an organization property definition by slug"
-    },
-    {
-      "name": "listTags",
-      "description": "List Help Scout tags with IDs, exact names, and ticket counts"
-    },
-    {
-      "name": "getTag",
-      "description": "Get a Help Scout tag by ID"
-    },
-    {
-      "name": "listUsers",
-      "description": "List Help Scout users with optional exact email or inbox filtering"
-    },
-    {
-      "name": "getUser",
-      "description": "Get a Help Scout user by ID or the authenticated resource owner"
-    },
-    {
-      "name": "listSystemUsers",
-      "description": "List Help Scout system users using the v3 API"
-    },
-    {
-      "name": "getSystemUser",
-      "description": "Get one Help Scout system user by ID"
-    },
-    {
-      "name": "listUserStatuses",
-      "description": "List Help Scout user email and chat availability statuses"
-    },
-    {
-      "name": "getUserStatus",
-      "description": "Get one Help Scout user email and chat availability status"
-    },
-    {
-      "name": "listTeams",
-      "description": "List Help Scout teams with IDs for member lookup and reporting"
-    },
-    {
-      "name": "getTeamMembers",
-      "description": "List users who belong to a Help Scout team"
-    },
-    {
-      "name": "listInboxCustomFields",
-      "description": "List custom field definitions and option IDs for an inbox"
-    },
-    {
-      "name": "listInboxFolders",
-      "description": "List folders and counts for a Help Scout inbox"
-    },
-    {
-      "name": "getInboxRouting",
-      "description": "Get Help Scout routing configuration for an inbox"
-    },
-    {
-      "name": "listSavedReplies",
-      "description": "List saved replies for a Help Scout inbox"
-    },
-    {
-      "name": "getSavedReply",
-      "description": "Get one saved reply for a Help Scout inbox"
-    },
-    {
-      "name": "getOriginalSource",
-      "description": "Get original source JSON for a Help Scout conversation thread"
-    },
-    {
-      "name": "getOriginalSourceRfc822",
-      "description": "Get original source as message/rfc822 for a Help Scout conversation thread"
-    },
-    {
-      "name": "getAttachment",
-      "description": "Get base64-encoded Help Scout attachment data"
-    },
-    {
-      "name": "downloadAttachmentFile",
-      "description": "Download a Help Scout attachment file as base64 with response metadata"
-    },
-    {
-      "name": "listWorkflows",
-      "description": "List Help Scout workflows"
-    },
-    {
-      "name": "listWebhooks",
-      "description": "List Help Scout webhooks"
-    },
-    {
-      "name": "getWebhook",
-      "description": "Get a Help Scout webhook by ID"
-    },
-    {
-      "name": "getSatisfactionRating",
-      "description": "Get a Help Scout satisfaction rating by ID"
-    },
-    {
-      "name": "getCompanyReport",
-      "description": "Get the Help Scout company overall report"
-    },
-    {
-      "name": "getCompanyCustomersHelpedReport",
-      "description": "Get Help Scout company customers helped time series"
-    },
-    {
-      "name": "getCompanyDrilldownReport",
-      "description": "Get Help Scout company drilldown conversation rows"
-    },
-    {
-      "name": "getConversationsReport",
-      "description": "Get the Help Scout conversations overall report"
-    },
-    {
-      "name": "getConversationVolumeByChannelReport",
-      "description": "Get Help Scout conversation volume by channel time series"
-    },
-    {
-      "name": "getConversationBusyTimesReport",
-      "description": "Get Help Scout busiest time of day conversation report"
-    },
-    {
-      "name": "getConversationDrilldownReport",
-      "description": "Get Help Scout conversation drilldown rows"
-    },
-    {
-      "name": "getConversationFieldDrilldownReport",
-      "description": "Get Help Scout conversation drilldown rows for a field value"
-    },
-    {
-      "name": "getConversationNewReport",
-      "description": "Get Help Scout new conversations time series"
-    },
-    {
-      "name": "getConversationNewDrilldownReport",
-      "description": "Get Help Scout new conversation drilldown rows"
-    },
-    {
-      "name": "getConversationReceivedMessagesReport",
-      "description": "Get Help Scout received customer messages time series"
-    },
-    {
-      "name": "getDocsReport",
-      "description": "Get the Help Scout Docs overall report"
-    },
-    {
-      "name": "getHappinessReport",
-      "description": "Get the Help Scout happiness overall report"
-    },
-    {
-      "name": "getHappinessRatingsReport",
-      "description": "Get Help Scout happiness rating rows"
-    },
-    {
-      "name": "getProductivityReport",
-      "description": "Get the Help Scout productivity overall report"
-    },
-    {
-      "name": "getProductivityFirstResponseTimeReport",
-      "description": "Get Help Scout productivity first response time series"
-    },
-    {
-      "name": "getProductivityRepliesSentReport",
-      "description": "Get Help Scout productivity replies sent time series"
-    },
-    {
-      "name": "getProductivityResolutionTimeReport",
-      "description": "Get Help Scout productivity resolution time series"
-    },
-    {
-      "name": "getProductivityResolvedReport",
-      "description": "Get Help Scout productivity resolved conversations time series"
-    },
-    {
-      "name": "getProductivityResponseTimeReport",
-      "description": "Get Help Scout productivity response time series"
-    },
-    {
-      "name": "getUserReport",
-      "description": "Get the Help Scout user or team overall report"
-    },
-    {
-      "name": "getUserConversationHistoryReport",
-      "description": "Get Help Scout user conversation history rows"
-    },
-    {
-      "name": "getUserCustomersHelpedReport",
-      "description": "Get Help Scout user customers helped time series"
-    },
-    {
-      "name": "getUserDrilldownReport",
-      "description": "Get Help Scout user report drilldown conversations"
-    },
-    {
-      "name": "getUserHappinessReport",
-      "description": "Get Help Scout user happiness report"
-    },
-    {
-      "name": "getUserRatingsReport",
-      "description": "Get Help Scout user happiness rating rows"
-    },
-    {
-      "name": "getUserRepliesReport",
-      "description": "Get Help Scout user replies time series"
-    },
-    {
-      "name": "getUserResolutionsReport",
-      "description": "Get Help Scout user resolutions time series"
-    },
-    {
-      "name": "getUserChatReport",
-      "description": "Get Help Scout user or team chat report"
-    },
-    {
-      "name": "getChatReport",
-      "description": "Get the Help Scout chat report"
-    },
-    {
-      "name": "getEmailReport",
-      "description": "Get the Help Scout email report"
-    },
-    {
-      "name": "getPhoneReport",
-      "description": "Get the Help Scout phone report"
-    },
-    {
-      "name": "listDocsSites",
-      "description": "List Help Scout Docs sites"
-    },
-    {
-      "name": "getDocsSite",
-      "description": "Get a Help Scout Docs site by ID"
-    },
-    {
-      "name": "getDocsSiteRestrictions",
-      "description": "Get Help Scout Docs site restriction settings by site ID"
-    },
-    {
-      "name": "listDocsCollections",
-      "description": "List Help Scout Docs collections"
-    },
-    {
-      "name": "getDocsCollection",
-      "description": "Get a Help Scout Docs collection by ID or number"
-    },
-    {
-      "name": "listDocsCategories",
-      "description": "List Help Scout Docs categories for a collection"
-    },
-    {
-      "name": "getDocsCategory",
-      "description": "Get a Help Scout Docs category by ID or number"
-    },
-    {
-      "name": "listDocsArticles",
-      "description": "List Help Scout Docs articles for a collection or category"
-    },
-    {
-      "name": "searchDocsArticles",
-      "description": "Search Help Scout Docs articles"
-    },
-    {
-      "name": "getDocsArticle",
-      "description": "Get a Help Scout Docs article by ID or number"
-    },
-    {
-      "name": "listDocsRelatedArticles",
-      "description": "List related Help Scout Docs articles"
-    },
-    {
-      "name": "listDocsArticleRevisions",
-      "description": "List revisions for a Help Scout Docs article"
-    },
-    {
-      "name": "getDocsArticleRevision",
-      "description": "Get a Help Scout Docs article revision by ID"
-    },
-    {
-      "name": "listDocsRedirects",
-      "description": "List Help Scout Docs redirects for a site"
-    },
-    {
-      "name": "getDocsRedirect",
-      "description": "Get a Help Scout Docs redirect by ID"
-    },
-    {
-      "name": "findDocsRedirect",
-      "description": "Resolve a Help Scout Docs redirect target"
+      "name": "read_help_scout",
+      "description": "Execute one Help Scout read operation using arguments that match its loaded schema. All operations are read-only."
     }
   ],
   "prompts": [
     {
       "name": "search-last-7-days",
       "description": "Find recent conversations from the last 7 days",
-      "text": "To search for conversations from the last 7 days:\n1. Use getServerTime tool to get current timestamp\n2. Calculate date 7 days ago\n3. Use searchConversations with createdAfter parameter\n4. Optionally get details with getConversationSummary or getThreads"
+      "text": "To search for conversations from the last 7 days:\n1. Run the getServerTime operation via read_help_scout to get current timestamp\n2. Calculate date 7 days ago\n3. Run searchConversations via read_help_scout with createdAfter parameter\n4. Optionally get details by running getConversationSummary or getThreads via read_help_scout"
     },
     {
       "name": "find-urgent-tags",
       "description": "Locate urgent or priority conversations",
-      "text": "To find urgent conversations:\n1. Use getServerTime tool\n2. Search for conversations with tags like 'urgent', 'priority', 'high-priority', 'critical'\n3. Use searchConversations tool with tag parameter\n4. Consider using getConversationSummary for quick assessment"
+      "text": "To find urgent conversations:\n1. Run the getServerTime operation via read_help_scout\n2. Search for conversations with tags like 'urgent', 'priority', 'high-priority', 'critical'\n3. Run searchConversations via read_help_scout with tag parameter\n4. Consider running getConversationSummary via read_help_scout for quick assessment"
     },
     {
       "name": "list-inbox-activity",
       "description": "Monitor inbox activity over time",
-      "text": "To monitor inbox activity:\n1. Use getServerTime tool\n2. Calculate timestamp N hours ago\n3. Use searchConversations with inboxId and createdAfter\n4. Analyze results for activity patterns and status breakdown"
+      "text": "To monitor inbox activity:\n1. Run the getServerTime operation via read_help_scout\n2. Calculate timestamp N hours ago\n3. Run searchConversations via read_help_scout with inboxId and createdAfter\n4. Analyze results for activity patterns and status breakdown"
     }
   ],
   "keywords": [
@@ -548,5 +152,22 @@
     "tickets",
     "oauth2"
   ],
-  "license": "MIT"
+  "license": "MIT",
+  "homepage": "https://github.com/drewburchfield/help-scout-mcp-server",
+  "support": "https://github.com/drewburchfield/help-scout-mcp-server/issues",
+  "privacy_policies": [
+    "https://www.helpscout.com/company/legal/privacy/"
+  ],
+  "compatibility": {
+    "claude_desktop": ">=0.10.0",
+    "platforms": [
+      "darwin",
+      "win32",
+      "linux"
+    ],
+    "runtimes": {
+      "node": ">=18.0.0"
+    }
+  },
+  "tools_generated": false
 }

@@ -8,7 +8,7 @@ This guide walks you through installing the Help Scout plugin in Claude Cowork a
 2. Click **Customize** in the left sidebar
 3. Click **Browse plugins** and go to the **Personal** tab
 4. Click the **+** button and choose **Add marketplace from GitHub**
-5. Enter: `drewburchfield/help-scout-mcp-server`
+5. Enter: `drewburchfield/help-scout-mcp-server` (the plugin ships from this repo, not from a separate marketplace repo)
 6. Find **helpscout-navigator** in the list and click **Install**
 7. When prompted about local MCP servers, click **Continue**
 
@@ -24,6 +24,13 @@ You'll need two values from Help Scout: an **App ID** and an **App Secret**.
 6. Click **Create** and copy the **App ID** and **App Secret**
 
 Keep these values handy for the next step.
+
+**About scopes:** Mailboxes and Conversations are the minimum and cover everyday
+support work. Full read coverage needs **Read** access beyond those two: reports,
+users, and tags each require their own scope, and requests will fail with a
+permission error until they are granted. The Docs operations are separate again:
+they use a Docs API key (`HELPSCOUT_DOCS_API_KEY`), not the App ID and Secret, so
+leave them out unless you need knowledge-base access.
 
 ## Step 3: Add Your Credentials
 
@@ -100,6 +107,8 @@ Start a new Cowork session and try asking Claude:
 
 If everything is connected, Claude will list your inboxes. If you see an authentication error, double-check your App ID and App Secret.
 
+If you check the connector's tool list, you will see exactly three tools: `search_help_scout`, `describe_help_scout`, and `read_help_scout`. That is expected. They are a gateway over 55 read-only Help Scout operations, which Claude finds and runs as needed.
+
 ## Troubleshooting
 
 **"Authentication failed" error:**
@@ -107,6 +116,9 @@ Your credentials may be incorrect. Go back to Help Scout > My Apps and verify th
 
 **Plugin installed but no Help Scout tools available:**
 Restart Claude after adding your credentials. The MCP server only starts on launch.
+
+**"Permission denied" on reports, users, or tags:**
+Your private app is missing that scope. Go back to Help Scout > My Apps, edit the app, add **Read** access for the resource, and restart Claude.
 
 **"Command not found: npx" error:**
 You need Node.js installed. Download it from [nodejs.org](https://nodejs.org) (choose the LTS version) and restart Claude.

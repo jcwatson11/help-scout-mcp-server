@@ -1,77 +1,75 @@
-# Common HelpScout MCP Mistakes
+# Common Help Scout MCP Mistakes
 
 Detailed anti-patterns with explanations and fixes.
 
 ---
 
-## Mistake 1: Searching Without Inbox Lookup
+## Mistake 1: Calling Operation Names as MCP Tools
+
+**What happens:**
+```javascript
+// WRONG:
+mcp__helpscout__searchConversations({ contentTerms: ["billing"] })
+// Error: no such tool
+```
+
+**Why it fails:** The server advertises exactly three tools: `search_help_scout`, `describe_help_scout`, and `read_help_scout`. The 55 operations live behind them.
+
+**Correct approach:**
+```javascript
+read_help_scout({
+  name: "searchConversations",
+  arguments: { contentTerms: ["billing"] }
+})
+```
+
+---
+
+## Mistake 2: Guessing Arguments Instead of Describing First
+
+**What happens:**
+```javascript
+// WRONG:
+read_help_scout({ name: "searchConversations", arguments: { searchTerms: ["refund"] } })
+// searchTerms is not a valid argument
+```
+
+**Why it fails:** Each operation has its own schema. Guessed argument names silently filter nothing or error.
+
+**Correct approach:**
+```javascript
+// Step 1: Get the real schema
+describe_help_scout({ names: ["searchConversations"] })
+
+// Step 2: Use the documented arguments
+read_help_scout({
+  name: "searchConversations",
+  arguments: { contentTerms: ["refund"] }
+})
+```
+
+---
+
+## Mistake 3: Looking Up Inboxes You Already Have
 
 **What happens:**
 ```javascript
 // User says: "Search the support inbox for billing"
-// WRONG:
-searchConversations({ query: "billing", inboxId: "support" })
-// Error: "support" is not a valid inbox ID
+// Wasteful:
+read_help_scout({ name: "listAllInboxes", arguments: {} })
+// The inbox IDs were already in the server instructions
 ```
 
-**Why it fails:** The API requires inbox IDs (numeric), not names. "support" is a name, not an ID.
+**Why it's wrong:** Inboxes are auto-discovered at connect time and listed with their IDs in the server instructions.
 
 **Correct approach:**
 ```javascript
-// Step 1: Look up inbox ID
-searchInboxes({ query: "support" })
-// Returns: { id: 359402, name: "Support" }
-
-// Step 2: Use the ID
-searchConversations({ query: "billing", inboxId: "359402" })
-```
-
----
-
-## Mistake 2: Using searchConversations for Keyword Search
-
-**What happens:**
-```javascript
-// User says: "Find tickets about refunds"
-// WRONG:
-searchConversations({ query: "refund" })
-// Only returns ACTIVE tickets - misses 80%+ of closed/pending tickets
-```
-
-**Why it fails:** `searchConversations` defaults to `status: "active"`. Most tickets are closed.
-
-**Correct approach:**
-```javascript
-// Use comprehensive search - searches all statuses by default
-comprehensiveConversationSearch({ searchTerms: ["refund"] })
-```
-
----
-
-## Mistake 3: Assuming searchConversations Returns All Statuses
-
-**What happens:**
-```javascript
-// User says: "Find tickets about refunds"
-// WRONG assumption:
-searchConversations({ query: "refund" })
-// Only counts active tickets when query is provided!
-```
-
-**Why it fails:** When `query` or `tag` is provided without explicit `status`, it defaults to "active" only. Without any search criteria, it returns all statuses.
-
-**Correct approach:**
-```javascript
-// Option 1: Explicit statuses with searchConversations
-searchConversations({ status: "closed" })
-searchConversations({ status: "pending" })
-searchConversations({ status: "active" })
-
-// Option 2: Use comprehensive search (searches all statuses automatically)
-comprehensiveConversationSearch({
-  searchTerms: ["refund"],
-  statuses: ["active", "pending", "closed"]
+// Read the inbox ID straight from the server instructions, then:
+read_help_scout({
+  name: "searchConversations",
+  arguments: { contentTerms: ["billing"], inboxId: "359402" }
 })
+// Only call listAllInboxes (optionally with nameContains) if inboxes changed mid-session
 ```
 
 ---
@@ -81,102 +79,79 @@ comprehensiveConversationSearch({
 **What happens:**
 ```javascript
 // WRONG:
-searchConversations({ inboxId: "Support" })
-searchConversations({ inboxId: "sales@company.com" })
+read_help_scout({ name: "searchConversations", arguments: { inboxId: "Support" } })
+read_help_scout({ name: "searchConversations", arguments: { inboxId: "sales@company.com" } })
 // Both fail - not valid inbox IDs
 ```
 
 **Why it fails:** Inbox IDs are numeric (like `359402`), not names or emails.
 
-**Correct approach:**
-```javascript
-// Always look up first
-const inboxes = searchInboxes({ query: "support" });
-const inboxId = inboxes[0].id; // 359402
-searchConversations({ inboxId: "359402" })
-```
+**Correct approach:** Use the numeric ID listed in the server instructions.
 
 ---
 
-## Mistake 5: Using `status: "all"` with searchConversations
+## Mistake 5: Narrowing Status Out of Habit
 
 **What happens:**
 ```javascript
-// User says: "Show me all recent tickets"
-// WRONG:
-searchConversations({ status: "all" })
-// Error: Invalid enum value. Expected 'active' | 'pending' | 'closed' | 'spam', received 'all'
+// User says: "Find tickets about refunds"
+// Suboptimal:
+read_help_scout({
+  name: "searchConversations",
+  arguments: { contentTerms: ["refund"], status: "active" }
+})
+// Misses closed and pending tickets, which is most of them
 ```
 
-**Why it fails:** `searchConversations` only accepts specific status values: active, pending, closed, spam. It does NOT support "all".
+**Why it's wrong:** `searchConversations` already searches active + pending + closed by default (spam excluded). Adding `status` narrows the result.
 
 **Correct approach:**
 ```javascript
-// Use structuredConversationFilter with a unique sortBy value
-structuredConversationFilter({
-  sortBy: "waitingSince",  // Required: unique sortBy enables status: "all"
-  status: "all",
-  sortOrder: "desc",
-  limit: 50
-})
+// Omit status unless the user asked for a specific one
+read_help_scout({ name: "searchConversations", arguments: { contentTerms: ["refund"] } })
+
+// Explicit narrowing when asked:
+read_help_scout({ name: "searchConversations", arguments: { contentTerms: ["refund"], status: "closed" } })
 ```
 
 ---
 
-## Mistake 6: Using structuredConversationFilter Without Unique Field
+## Mistake 6: Using Removed Operation Names
 
 **What happens:**
 ```javascript
-// User says: "Show me recent tickets across all statuses"
 // WRONG:
-structuredConversationFilter({ status: "all" })
-// Error: Must use at least one unique field: assignedTo, folderId, customerIds, conversationNumber, or unique sorting
+read_help_scout({ name: "comprehensiveConversationSearch", arguments: { ... } })
+// Error: unknown operation
 ```
 
-**Why it fails:** `structuredConversationFilter` requires at least one "unique field" to work.
+**Why it fails:** Older guidance taught operations that no longer exist.
 
-**Unique fields are:**
-- `conversationNumber` (direct ticket lookup)
-- `assignedTo` (user ID or -1 for unassigned)
-- `folderId`
-- `customerIds`
-- `sortBy` with value: `waitingSince`, `customerName`, or `customerEmail`
-
-**Correct approach:**
-```javascript
-// Add a unique sortBy value
-structuredConversationFilter({
-  sortBy: "waitingSince",  // This is the trick!
-  status: "all",
-  sortOrder: "desc",
-  limit: 50
-})
-```
+**Migration map (old → new):**
+- `searchInboxes` → `listAllInboxes` (optionally `nameContains`), or just read the server instructions
+- `advancedConversationSearch` / `structuredConversationFilter` (and the comprehensive search above) → `searchConversations` with convenience filters (`contentTerms`, `subjectTerms`, `email`, `emailDomain`, `customerIds`, `hasAttachments`, `inboxId`, `folderId`, `tag`, `status`, `createdAfter`/`createdBefore`, `conversationNumber`, `assignedTo`)
+- `listCustomersV3` → `listCustomers` with `useV3` or a `cursor`
+- `getCustomerAddress` and other contact sub-resources → `getCustomerContacts`
 
 ---
 
-## Mistake 7: Using structuredConversationFilter as First Search
+## Mistake 7: Filtering by Assignee Name
 
 **What happens:**
 ```javascript
 // User says: "Find tickets assigned to John"
 // WRONG:
-structuredConversationFilter({ assignedTo: "John" })
-// Error: assignedTo requires a user ID (number), not a name
+read_help_scout({ name: "searchConversations", arguments: { assignedTo: "John" } })
+// assignedTo requires a user ID (number), not a name
 ```
-
-**Why it fails:** `structuredConversationFilter` works with IDs from previous searches.
 
 **Correct approach:**
 ```javascript
-// Step 1: Find John's user ID (from a previous search or user lookup)
-// Step 2: Then filter
-structuredConversationFilter({ assignedTo: 12345 })
-```
+// Step 1: Find John's user ID
+read_help_scout({ name: "listUsers", arguments: {} })
 
-**Exception:** Direct ticket number lookup works without prior search:
-```javascript
-structuredConversationFilter({ conversationNumber: 42839 })
+// Step 2: Filter by ID (-1 means unassigned)
+read_help_scout({ name: "searchConversations", arguments: { assignedTo: 12345 } })
 ```
 
 ---
@@ -187,15 +162,16 @@ structuredConversationFilter({ conversationNumber: 42839 })
 ```javascript
 // User says: "Find billing issues"
 // Suboptimal:
-comprehensiveConversationSearch({ searchTerms: ["billing"] })
-// Misses "bill", "billed", "invoice", etc.
+read_help_scout({ name: "searchConversations", arguments: { contentTerms: ["billing"] } })
+// Misses "invoice", "payment", etc.
 ```
 
 **Better approach:**
 ```javascript
-comprehensiveConversationSearch({
-  searchTerms: ["billing", "invoice", "payment"],
-  includeVariations: true
+// contentTerms are OR-combined
+read_help_scout({
+  name: "searchConversations",
+  arguments: { contentTerms: ["billing", "invoice", "payment"] }
 })
 ```
 
@@ -207,51 +183,39 @@ comprehensiveConversationSearch({
 ```javascript
 // User says: "Get all tickets from last month"
 // WRONG:
-searchConversations({ createdAfter: "2024-01-01" })
-// Only returns first 50 results (default limit)
+read_help_scout({ name: "searchConversations", arguments: { createdAfter: "2026-06-01T00:00:00Z" } })
+// Only returns the first page (default limit 50)
 ```
-
-**Why it fails:** Default limit is 50. Large date ranges may have hundreds of tickets.
 
 **Correct approach:**
 ```javascript
-// Check for cursor in response
-let cursor = null;
-do {
-  const result = searchConversations({
-    createdAfter: "2024-01-01",
-    cursor: cursor,
-    limit: 100
-  });
-  // Process result.conversations
-  cursor = result.nextCursor;
-} while (cursor);
+// Walk pages until results run out
+read_help_scout({
+  name: "searchConversations",
+  arguments: { createdAfter: "2026-06-01T00:00:00Z", limit: 100, page: 1 }
+})
+// then page: 2, page: 3, ...
 ```
 
 ---
 
-## Mistake 10: Not Specifying Timeframe
+## Mistake 10: Hardcoding "Today" in Date Filters
 
 **What happens:**
 ```javascript
-// User says: "Find urgent tickets"
-// Suboptimal:
-comprehensiveConversationSearch({ searchTerms: ["urgent"] })
-// Searches 60 days by default - might be too much or too little
+// User says: "Tickets from the last 7 days"
+// Fragile: guessing the current date for createdAfter
 ```
 
-**Better approach:**
+**Correct approach:**
 ```javascript
-// Be explicit about timeframe
-comprehensiveConversationSearch({
-  searchTerms: ["urgent"],
-  timeframeDays: 7  // Last week
-})
+// Step 1: Get the authoritative clock
+read_help_scout({ name: "getServerTime", arguments: {} })
 
-// Or use specific dates
-comprehensiveConversationSearch({
-  searchTerms: ["urgent"],
-  createdAfter: "2024-01-15T00:00:00Z"
+// Step 2: Compute the ISO date from that response
+read_help_scout({
+  name: "searchConversations",
+  arguments: { createdAfter: "<serverTime minus 7 days>" }
 })
 ```
 
@@ -261,7 +225,7 @@ comprehensiveConversationSearch({
 
 **What happens:**
 ```javascript
-getConversationSummary({ conversationId: "12345678" })
+read_help_scout({ name: "getConversationSummary", arguments: { conversationId: "12345678" } })
 // Returns: { body: "[Content hidden - set REDACT_MESSAGE_CONTENT=false to view]" }
 ```
 
@@ -276,18 +240,27 @@ export REDACT_MESSAGE_CONTENT=true
 
 ---
 
+## Mistake 12: Expecting Write Operations
+
+**What happens:** Asking any operation to reply, tag, assign, or close a ticket.
+
+**Why it fails:** Every operation in the registry is read-only. There is no create, update, or delete surface.
+
+**Correct approach:** Do the write in the Help Scout UI, then verify with a read operation.
+
+---
+
 ## Quick Checklist
 
 Before any HelpScout operation, verify:
 
 | Check | Action |
 |-------|--------|
-| User mentioned inbox name? | Call `searchInboxes` first |
-| Searching by keywords? | Use `comprehensiveConversationSearch` |
-| Need closed/pending tickets? | Don't use bare `searchConversations` |
-| Need ALL statuses (active+pending+closed+spam)? | Use `structuredConversationFilter(sortBy: "waitingSince", status: "all")` |
-| Trying to use `status: "all"` with `searchConversations`? | **WON'T WORK** - use `structuredConversationFilter` instead |
-| Using `structuredConversationFilter`? | Must have a unique field: conversationNumber, assignedTo, customerIds, folderId, OR sortBy with waitingSince/customerName/customerEmail |
-| Using inbox ID in API call? | Ensure it's numeric (like 359402), not a name |
-| Large result set expected? | Handle pagination with cursor |
-| Need specific timeframe? | Set `timeframeDays` or date params |
+| Unsure which operation to use? | `search_help_scout` with the user's intent |
+| About to build arguments? | `describe_help_scout` for the exact schema |
+| Executing? | `read_help_scout({ name, arguments })`, never the operation name as a tool |
+| User mentioned an inbox? | Use the numeric ID from server instructions |
+| Conversation search? | `searchConversations`; omit `status` (default is active+pending+closed) |
+| Filtering by assignee? | Need a numeric user ID (`listUsers` first; -1 = unassigned) |
+| Large result set expected? | Handle pagination with `limit` and `page` |
+| Date-relative query? | `getServerTime` first, then ISO dates |

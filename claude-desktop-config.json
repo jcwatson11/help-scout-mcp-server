@@ -2,10 +2,13 @@
   "mcpServers": {
     "helpscout": {
       "command": "npx",
-      "args": ["help-scout-mcp-server"],
+      "args": [
+        "-y",
+        "help-scout-mcp-server@2.0.0"
+      ],
       "env": {
-        "HELPSCOUT_CLIENT_ID": "your-client-id-here",
-        "HELPSCOUT_CLIENT_SECRET": "your-client-secret-here",
+        "HELPSCOUT_APP_ID": "your-app-id-here",
+        "HELPSCOUT_APP_SECRET": "your-app-secret-here",
         "HELPSCOUT_BASE_URL": "https://api.helpscout.net/v2/",
         "REDACT_MESSAGE_CONTENT": "false",
         "CACHE_TTL_SECONDS": "300",

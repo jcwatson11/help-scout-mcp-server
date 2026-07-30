@@ -19,5 +19,5 @@ jobs:
         username: ${{ secrets.DOCKERHUB_USERNAME }}
         password: ${{ secrets.DOCKERHUB_TOKEN }}
         repository: ${{ secrets.DOCKERHUB_USERNAME }}/help-scout-mcp-server
-        short-description: "Help Scout MCP Server v1.3.0 - Enhanced tool guidance, MCP SDK v1.17.4, DXT format compliance"
+        short-description: "MCP server for Help Scout - enables AI assistants to search conversations and support data"
         readme-filepath: ./README.md

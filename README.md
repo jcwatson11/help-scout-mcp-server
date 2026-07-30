@@ -58,10 +58,11 @@ Add to your MCP client's config file (e.g., `claude_desktop_config.json`, `.curs
   "mcpServers": {
     "helpscout": {
       "command": "npx",
-      "args": ["help-scout-mcp-server"],
+      "args": ["help-scout-mcp-server@2.0.0"],
       "env": {
         "HELPSCOUT_APP_ID": "your-app-id",
-        "HELPSCOUT_APP_SECRET": "your-app-secret"
+        "HELPSCOUT_APP_SECRET": "your-app-secret",
+        "HELPSCOUT_DOCS_API_KEY": "optional-docs-api-key"
       }
     }
   }
@@ -73,7 +74,8 @@ Add to your MCP client's config file (e.g., `claude_desktop_config.json`, `.curs
 ```bash
 docker run -e HELPSCOUT_APP_ID="your-app-id" \
   -e HELPSCOUT_APP_SECRET="your-app-secret" \
-  drewburchfield/help-scout-mcp-server
+  -e HELPSCOUT_DOCS_API_KEY="optional-docs-api-key" \
+  drewburchfield/help-scout-mcp-server:2.0.0
 ```
 
 ## Getting Your API Credentials
@@ -89,11 +91,21 @@ docker run -e HELPSCOUT_APP_ID="your-app-id" \
 | **App ID** | `HELPSCOUT_APP_ID` |
 | **App Secret** | `HELPSCOUT_APP_SECRET` |
 
-Alternative names `HELPSCOUT_CLIENT_ID` / `HELPSCOUT_CLIENT_SECRET` and legacy `HELPSCOUT_API_KEY` are also supported.
+Alternative names `HELPSCOUT_CLIENT_ID` / `HELPSCOUT_CLIENT_SECRET` are also supported.
 
 Docs knowledge base tools use Help Scout Docs API v1, which is separate from the Mailbox API. Set `HELPSCOUT_DOCS_API_KEY` only if you want to use `listDocs*`, `searchDocsArticles`, `getDocsArticle`, or redirect tools.
 
 ## Tools
+
+The server advertises three tools that together reach every supported read operation (55 across the Mailbox and Docs APIs):
+
+| Tool | Purpose |
+|------|---------|
+| `search_help_scout` | Find operations by intent ("customer conversation history", "happiness report") |
+| `describe_help_scout` | Load the full input schemas for the operations you selected |
+| `read_help_scout` | Execute one operation: `{ "name": "getThreads", "arguments": { ... } }` |
+
+This keeps the advertised surface small enough that AI clients don't drown in schemas, while every read capability stays one search away. Operations in the current registry also remain callable by name directly. Tool names removed in the v2.0.0 consolidation (for example `comprehensiveConversationSearch`, `structuredConversationFilter`, and `searchInboxes`) are not; their capabilities live in `searchConversations` and `listAllInboxes`.
 
 For the MCP compatibility contract and roadmap, see:
 
@@ -101,14 +113,16 @@ For the MCP compatibility contract and roadmap, see:
 - [MCP vs CLI boundary](guides/architecture/mcp-vs-cli.md)
 - [MCP tool surface roadmap](guides/roadmap/mcp-tool-surface.md)
 
-### Which tool should I use?
+### Which operation should I use?
 
-| Task | Tool | Example |
-|------|------|---------|
+Run any of these via `read_help_scout`:
+
+| Task | Operation | Example |
+|------|-----------|---------|
 | List recent tickets | `searchConversations` | "Show me active tickets from this week" |
-| Find by keyword | `comprehensiveConversationSearch` | "Find conversations about billing errors" |
-| Look up a ticket number | `structuredConversationFilter` | "Show me ticket #42839" |
-| Complex filters | `advancedConversationSearch` | "All @acme.com conversations tagged urgent" |
+| Find by keyword | `searchConversations` (`contentTerms`) | "Find conversations about billing errors" |
+| Look up a ticket number | `searchConversations` (`conversationNumber`) | "Show me ticket #42839" |
+| Complex filters | `searchConversations` (`emailDomain`, `tag`) | "All @acme.com conversations tagged urgent" |
 | Browse customers | `listCustomers` | "Show customers named Jane" |
 | Find a customer by email | `searchCustomersByEmail` | "Find customer jane@acme.com" |
 | Inspect a customer profile | `getCustomer` | "Open customer 12345" |
@@ -120,7 +134,7 @@ For the MCP compatibility contract and roadmap, see:
 | Raw conversation detail | `getConversation` | "Open conversation 12345 with full metadata" |
 | Quick conversation overview | `getConversationSummary` | "Summarize this conversation" |
 | Full message history | `getThreads` | "Show me the complete thread" |
-| Inspect routing state | `getInboxRouting` | "Show routing for inbox 359402" |
+| Inspect inbox fields, folders, or routing | `getInbox` (`include`) | "Show routing for inbox 359402" (`include: ["routing"]`) |
 | Search Docs articles | `searchDocsArticles` | "Find knowledge base articles about refunds" |
 | Retrieve a Docs article | `getDocsArticle` | "Open Docs article 123" |
 | Current MCP host time | `getServerTime` | Used for time-relative searches |
@@ -171,14 +185,14 @@ curl -X POST https://api.helpscout.net/v2/oauth2/token \
 ```
 
 **Empty search results?** Common causes:
-- Using the wrong search tool (use `searchConversations` for listing, `comprehensiveConversationSearch` for keyword search)
+- Forgetting that `searchConversations` is the single search tool: use `contentTerms`/`subjectTerms` for keyword search, plain filters for listing
 - Inbox ID mismatch. Check the IDs from server instructions, not guessed values.
 - Search terms too narrow. Try broader terms or a longer time range.
 
 **Need more detail?** Enable debug logging:
 
 ```bash
-LOG_LEVEL=debug npx help-scout-mcp-server
+LOG_LEVEL=debug npx help-scout-mcp-server@2.0.0
 ```
 
 ## Development

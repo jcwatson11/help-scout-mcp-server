@@ -55,36 +55,26 @@ const GOLDEN = {
   docsRedirectId: process.env.MCP_DOGFOOD_DOCS_REDIRECT_ID,
   docsRedirectUrl: process.env.MCP_DOGFOOD_DOCS_REDIRECT_URL,
   docsSearchQuery: process.env.MCP_DOGFOOD_DOCS_SEARCH_QUERY ?? 'test',
-  reportStart: process.env.MCP_DOGFOOD_REPORT_START ?? daysAgoIso(30),
+  // Report scenarios assert on seeded activity, so the window must cover the
+  // most recent dogfood:seed run. Keep under ~60 days: longer ranges make some
+  // report series endpoints reject the request. Re-seed when data ages out.
+  reportStart: process.env.MCP_DOGFOOD_REPORT_START ?? daysAgoIso(45),
   reportEnd: process.env.MCP_DOGFOOD_REPORT_END ?? daysAgoIso(0),
   skipReports: process.env.MCP_DOGFOOD_SKIP_REPORTS === 'true',
 };
 
 const EXPECTED_TOOLS = [
-  'searchInboxes',
   'searchConversations',
   'getConversation',
-  'getConversationV3',
   'getConversationSummary',
   'getThreads',
-  'getThreadsV3',
   'getServerTime',
   'listAllInboxes',
   'getInbox',
-  'advancedConversationSearch',
-  'comprehensiveConversationSearch',
-  'structuredConversationFilter',
   'getCustomer',
   'listCustomers',
-  'listCustomersV3',
   'searchCustomersByEmail',
   'getCustomerContacts',
-  'getCustomerAddress',
-  'listCustomerEmails',
-  'listCustomerPhones',
-  'listCustomerChats',
-  'listCustomerSocialProfiles',
-  'listCustomerWebsites',
   'getOrganization',
   'listOrganizations',
   'getOrganizationMembers',
@@ -96,19 +86,11 @@ const EXPECTED_TOOLS = [
   'getTag',
   'listUsers',
   'getUser',
-  'listSystemUsers',
-  'getSystemUser',
-  'listUserStatuses',
-  'getUserStatus',
   'listTeams',
   'getTeamMembers',
-  'listInboxCustomFields',
-  'listInboxFolders',
-  'getInboxRouting',
   'listSavedReplies',
   'getSavedReply',
   'getOriginalSource',
-  'getOriginalSourceRfc822',
   'getAttachment',
   'downloadAttachmentFile',
   'listWorkflows',
@@ -116,40 +98,14 @@ const EXPECTED_TOOLS = [
   'getWebhook',
   'getSatisfactionRating',
   'getCompanyReport',
-  'getCompanyCustomersHelpedReport',
-  'getCompanyDrilldownReport',
   'getConversationsReport',
-  'getConversationVolumeByChannelReport',
-  'getConversationBusyTimesReport',
-  'getConversationDrilldownReport',
-  'getConversationFieldDrilldownReport',
-  'getConversationNewReport',
-  'getConversationNewDrilldownReport',
-  'getConversationReceivedMessagesReport',
-  'getDocsReport',
-  'getHappinessReport',
-  'getHappinessRatingsReport',
   'getProductivityReport',
-  'getProductivityFirstResponseTimeReport',
-  'getProductivityRepliesSentReport',
-  'getProductivityResolutionTimeReport',
-  'getProductivityResolvedReport',
-  'getProductivityResponseTimeReport',
   'getUserReport',
-  'getUserConversationHistoryReport',
-  'getUserCustomersHelpedReport',
-  'getUserDrilldownReport',
-  'getUserHappinessReport',
-  'getUserRatingsReport',
-  'getUserRepliesReport',
-  'getUserResolutionsReport',
-  'getUserChatReport',
-  'getChatReport',
-  'getEmailReport',
-  'getPhoneReport',
+  'getHappinessReport',
+  'getChannelReport',
+  'getDocsReport',
   'listDocsSites',
   'getDocsSite',
-  'getDocsSiteRestrictions',
   'listDocsCollections',
   'getDocsCollection',
   'listDocsCategories',
@@ -167,6 +123,11 @@ const EXPECTED_TOOLS = [
 
 type ToolName = typeof EXPECTED_TOOLS[number];
 type JsonObject = Record<string, unknown>;
+
+// The advertised surface: three gateway tools over the operation registry.
+// Operations in EXPECTED_TOOLS execute through read_help_scout.
+const GATEWAY_TOOLS = ['search_help_scout', 'describe_help_scout', 'read_help_scout'] as const;
+const DESCRIBE_CHUNK_SIZE = 10;
 
 interface DogfoodContext {
   tools: Tool[];
@@ -215,6 +176,8 @@ interface Scenario {
   tool: ToolName;
   args: JsonObject | ((ctx: DogfoodContext) => JsonObject);
   expectError?: boolean;
+  /** Call the operation by its direct name instead of read_help_scout (legacy compatibility path). */
+  direct?: boolean;
   skipIf?: (ctx: DogfoodContext) => string | undefined;
   validate: (data: unknown, result: CallToolResult, ctx: DogfoodContext) => void;
   after?: (data: unknown, result: CallToolResult, ctx: DogfoodContext, session: McpDogfoodSession) => void | Promise<void>;
@@ -223,7 +186,7 @@ interface Scenario {
 interface ScenarioResult {
   name: string;
   tool: ToolName;
-  status: 'PASS' | 'FAIL';
+  status: 'PASS' | 'FAIL' | 'SKIP';
   durationMs: number;
   detail?: string;
 }
@@ -288,7 +251,18 @@ class McpDogfoodSession {
     };
   }
 
-  async callTool(name: ToolName, args: JsonObject): Promise<CallToolResult> {
+  async callTool(name: ToolName, args: JsonObject, direct = false): Promise<CallToolResult> {
+    const request = direct
+      ? { name, arguments: args }
+      : { name: 'read_help_scout', arguments: { name, arguments: args } };
+    return this.client.callTool(
+      request,
+      undefined,
+      { timeout: REQUEST_TIMEOUT_MS, resetTimeoutOnProgress: true, maxTotalTimeout: REQUEST_TIMEOUT_MS },
+    ) as Promise<CallToolResult>;
+  }
+
+  async callGatewayTool(name: string, args: JsonObject): Promise<CallToolResult> {
     return this.client.callTool(
       { name, arguments: args },
       undefined,
@@ -317,14 +291,18 @@ function parseToolData(result: CallToolResult): unknown {
   }
 }
 
-function getArray(data: unknown, keys: string[]): unknown[] {
-  if (!data || typeof data !== 'object') return [];
+function findArray(data: unknown, keys: string[]): unknown[] | undefined {
+  if (!data || typeof data !== 'object') return undefined;
   const obj = data as Record<string, unknown>;
   for (const key of keys) {
     const value = obj[key];
     if (Array.isArray(value)) return value;
   }
-  return [];
+  return undefined;
+}
+
+function getArray(data: unknown, keys: string[]): unknown[] {
+  return findArray(data, keys) ?? [];
 }
 
 function getObject(data: unknown, key: string): Record<string, unknown> | undefined {
@@ -358,8 +336,10 @@ function requireCondition(condition: unknown, message: string): asserts conditio
 }
 
 function requireArray(data: unknown, keys: string[], label: string): unknown[] {
-  const arr = getArray(data, keys);
-  requireCondition(Array.isArray(arr), `${label} is not an array`);
+  // A present-but-empty array passes; a missing key is response-shape drift
+  // and must fail rather than validate nothing.
+  const arr = findArray(data, keys);
+  requireCondition(arr !== undefined, `${label} response has none of the expected array keys: ${keys.join(', ')}`);
   return arr;
 }
 
@@ -435,7 +415,7 @@ function dateDaysAhead(days: number): string {
 async function runScenario(session: McpDogfoodSession, ctx: DogfoodContext, scenario: Scenario): Promise<void> {
   const skipReason = scenario.skipIf?.(ctx);
   if (skipReason) {
-    results.push({ name: scenario.name, tool: scenario.tool, status: 'PASS', durationMs: 0, detail: `SKIP: ${skipReason}` });
+    results.push({ name: scenario.name, tool: scenario.tool, status: 'SKIP', durationMs: 0, detail: skipReason });
     process.stderr.write(`  ${scenario.tool}: ${scenario.name}... SKIP (${skipReason})\n`);
     return;
   }
@@ -445,7 +425,7 @@ async function runScenario(session: McpDogfoodSession, ctx: DogfoodContext, scen
   process.stderr.write(`  ${label}...`);
   const start = Date.now();
   try {
-    const result = await session.callTool(scenario.tool, args);
+    const result = await session.callTool(scenario.tool, args, scenario.direct ?? false);
     const data = parseToolData(result);
     if (scenario.expectError && !result.isError && !(data && typeof data === 'object' && 'error' in data)) {
       throw new Error('Expected tool error, but call succeeded');
@@ -472,11 +452,44 @@ async function runScenario(session: McpDogfoodSession, ctx: DogfoodContext, scen
 
 function assertToolDiscovery(ctx: DogfoodContext): void {
   const discovered = [...ctx.toolNames].sort();
-  const expected = [...EXPECTED_TOOLS].sort();
+  const expected = [...GATEWAY_TOOLS].sort();
   const missing = expected.filter((name) => !ctx.toolNames.has(name));
-  const extra = discovered.filter((name) => !EXPECTED_TOOLS.includes(name as ToolName));
-  requireCondition(missing.length === 0, `Missing expected tools: ${missing.join(', ')}`);
-  requireCondition(extra.length === 0, `New tools need dogfood scenarios: ${extra.join(', ')}`);
+  const extra = discovered.filter((name) => !(GATEWAY_TOOLS as readonly string[]).includes(name));
+  requireCondition(missing.length === 0, `Missing advertised gateway tools: ${missing.join(', ')}`);
+  requireCondition(extra.length === 0, `Unexpected advertised tools beyond the gateway surface: ${extra.join(', ')}`);
+}
+
+/**
+ * Every operation in EXPECTED_TOOLS must be reachable through the gateway:
+ * describe_help_scout must return a schema (not unknown) for each, and
+ * search_help_scout must return usable results for a common intent.
+ */
+async function assertOperationReachability(session: McpDogfoodSession): Promise<void> {
+  const unknown: string[] = [];
+  for (let start = 0; start < EXPECTED_TOOLS.length; start += DESCRIBE_CHUNK_SIZE) {
+    const names = EXPECTED_TOOLS.slice(start, start + DESCRIBE_CHUNK_SIZE);
+    const result = await session.callGatewayTool('describe_help_scout', { names });
+    requireCondition(!result.isError, `describe_help_scout failed for chunk starting at ${names[0]}`);
+    const payload = parseToolData(result) as { schemas?: Array<{ name: string; unknown?: boolean; inputSchema?: unknown }> };
+    // Shape drift in the describe payload must fail loudly, not verify zero
+    // operations by iterating an empty fallback.
+    requireCondition(
+      Array.isArray(payload?.schemas) && payload.schemas.length === names.length,
+      `describe_help_scout returned ${payload?.schemas?.length ?? 'no'} schemas for ${names.length} requested names (chunk starting at ${names[0]})`
+    );
+    for (const schema of payload.schemas) {
+      if (schema.unknown || !schema.inputSchema) unknown.push(schema.name);
+    }
+  }
+  requireCondition(unknown.length === 0, `Operations not reachable through the gateway registry: ${unknown.join(', ')}`);
+
+  const search = await session.callGatewayTool('search_help_scout', { query: 'find conversations about billing' });
+  requireCondition(!search.isError, 'search_help_scout returned an error for a common intent');
+  const searchPayload = parseToolData(search) as { results?: Array<{ name: string }> };
+  requireCondition(
+    (searchPayload?.results ?? []).some((entry) => entry.name === 'searchConversations'),
+    'search_help_scout did not surface searchConversations for a billing intent',
+  );
 }
 
 function assertScenarioCoverage(scenarios: Scenario[]): void {
@@ -497,6 +510,16 @@ function buildScenarios(): Scenario[] {
         requireCondition(typeof obj?.unixTime === 'number', 'Missing unixTime');
         ctx.createdAfter = dateDaysAgo(365);
         ctx.createdBefore = dateDaysAhead(1);
+      },
+    },
+    {
+      tool: 'getServerTime',
+      name: 'legacy direct operation name still dispatches',
+      args: {},
+      direct: true,
+      validate: (data) => {
+        const obj = data as Record<string, unknown>;
+        requireCondition(typeof obj?.isoTime === 'string', 'Legacy direct call missing isoTime');
       },
     },
     {
@@ -530,20 +553,20 @@ function buildScenarios(): Scenario[] {
       },
     },
     {
-      tool: 'searchInboxes',
-      name: 'empty query lists inboxes',
-      args: { query: '', limit: 10 },
+      tool: 'listAllInboxes',
+      name: 'empty nameContains lists inboxes',
+      args: { limit: 100 },
       validate: (data) => {
-        const inboxes = requireArray(data, ['results', 'inboxes'], 'results');
-        requireCondition(inboxes.length > 0, 'Empty inbox query returned no results');
+        const inboxes = requireArray(data, ['inboxes', 'results'], 'inboxes');
+        requireCondition(inboxes.length > 0, 'Empty inbox filter returned no results');
       },
     },
     {
-      tool: 'searchInboxes',
-      name: 'name query finds target inbox',
-      args: { query: GOLDEN.inboxName.split(' ')[0], limit: 10 },
+      tool: 'listAllInboxes',
+      name: 'nameContains finds target inbox',
+      args: { nameContains: GOLDEN.inboxName.split(' ')[0], limit: 100 },
       validate: (data) => {
-        const inboxes = requireArray(data, ['results', 'inboxes'], 'results');
+        const inboxes = requireArray(data, ['inboxes', 'results'], 'inboxes');
         requireCondition(
           inboxes.some((item) => getString((item as JsonObject).name).includes(GOLDEN.inboxName.split(' ')[0])),
           `No inbox matched ${GOLDEN.inboxName}`,
@@ -551,9 +574,9 @@ function buildScenarios(): Scenario[] {
       },
     },
     {
-      tool: 'searchInboxes',
+      tool: 'listAllInboxes',
       name: 'invalid limit fails validation',
-      args: { query: '', limit: 101 },
+      args: { limit: 101 },
       expectError: true,
       validate: (data) => {
         requireCondition(data !== undefined, 'Expected validation response');
@@ -665,43 +688,50 @@ function buildScenarios(): Scenario[] {
       },
     },
     {
-      tool: 'listSystemUsers',
-      name: 'system user discovery',
-      args: { page: 1 },
+      tool: 'listUsers',
+      name: 'system user discovery via includeSystemActors',
+      args: { page: 1, includeSystemActors: true },
       validate: (data) => {
-        requireArray(data, ['systemUsers', 'results'], 'system users');
+        const response = data as JsonObject;
+        requireCondition(response.apiVersion === 'v3', 'Missing v3 API marker for system users');
+        requireArray(data, ['users', 'systemUsers', 'results'], 'system users');
       },
       after: (data, _result, ctx) => {
-        const systemUsers = getArray(data, ['systemUsers', 'results']) as JsonObject[];
+        const systemUsers = getArray(data, ['users', 'systemUsers', 'results']) as JsonObject[];
         if (systemUsers[0]?.id) ctx.systemUserId = String(systemUsers[0].id);
       },
     },
     {
-      tool: 'getSystemUser',
-      name: 'discovered system user details',
-      skipIf: (ctx) => ctx.systemUserId ? undefined : 'No system user available from listSystemUsers',
-      args: (ctx) => ({ systemUserId: ctx.systemUserId ?? '0' }),
+      tool: 'getUser',
+      name: 'discovered system user details via includeSystemActors',
+      skipIf: (ctx) => ctx.systemUserId ? undefined : 'No system user available from listUsers includeSystemActors',
+      args: (ctx) => ({ userId: ctx.systemUserId ?? '0', includeSystemActors: true }),
       validate: (data) => {
-        const systemUser = getObject(data, 'systemUser');
-        requireCondition(systemUser?.id, 'Missing system user');
+        const response = data as JsonObject;
+        requireCondition(response.apiVersion === 'v3', 'Missing v3 API marker for system user');
+        const user = getObject(data, 'user') ?? getObject(data, 'systemUser');
+        requireCondition(user?.id, 'Missing system user');
       },
     },
     {
-      tool: 'listUserStatuses',
-      name: 'user status discovery',
-      args: { page: 1 },
+      tool: 'listUsers',
+      name: 'user status discovery via includeStatuses',
+      args: { page: 1, includeStatuses: true },
       validate: (data) => {
-        requireArray(data, ['userStatuses', 'results'], 'user statuses');
+        requireArray(data, ['users', 'results'], 'users');
+        requireArray(data, ['statuses', 'userStatuses'], 'user statuses');
       },
     },
     {
-      tool: 'getUserStatus',
-      name: 'discovered user status',
+      tool: 'getUser',
+      name: 'discovered user status via includeStatus',
       skipIf: (ctx) => ctx.userId ? undefined : 'No numeric user available from listUsers/getUser',
-      args: (ctx) => ({ userId: ctx.userId ?? '0' }),
+      args: (ctx) => ({ userId: ctx.userId ?? '0', includeStatus: true }),
       validate: (data) => {
-        const userStatus = getObject(data, 'userStatus');
-        requireCondition(userStatus?.userId, 'Missing user status');
+        const user = getObject(data, 'user');
+        requireCondition(user?.id, 'Missing user');
+        const status = getObject(data, 'status') ?? getObject(user, 'status');
+        requireCondition(status !== undefined, 'Missing user status');
       },
     },
     {
@@ -726,25 +756,31 @@ function buildScenarios(): Scenario[] {
       },
     },
     {
-      tool: 'listInboxCustomFields',
-      name: 'inbox custom field definitions',
-      args: (ctx) => ({ inboxId: ctx.inboxId }),
+      tool: 'getInbox',
+      name: 'inbox custom field definitions via include fields',
+      args: (ctx) => ({ inboxId: ctx.inboxId, include: ['fields'] }),
       validate: (data) => {
-        requireArray(data, ['fields', 'results'], 'fields');
+        // fetchInboxSubResource wraps the array: { customFields: { fields: [...] } }
+        const customFields = getObject(data, 'customFields');
+        requireCondition(customFields, 'Missing customFields envelope');
+        requireArray(customFields, ['fields'], 'inbox custom fields');
       },
     },
     {
-      tool: 'listInboxFolders',
-      name: 'inbox folders',
-      args: (ctx) => ({ inboxId: ctx.inboxId }),
+      tool: 'getInbox',
+      name: 'inbox folders via include folders',
+      args: (ctx) => ({ inboxId: ctx.inboxId, include: ['folders'] }),
       validate: (data) => {
-        requireArray(data, ['folders', 'results'], 'folders');
+        // fetchInboxSubResource wraps the array: { folders: { folders: [...] } }
+        const foldersEnvelope = getObject(data, 'folders');
+        requireCondition(foldersEnvelope, 'Missing folders envelope');
+        requireArray(foldersEnvelope, ['folders'], 'inbox folders');
       },
     },
     {
-      tool: 'getInboxRouting',
-      name: 'inbox routing configuration',
-      args: (ctx) => ({ inboxId: ctx.inboxId }),
+      tool: 'getInbox',
+      name: 'inbox routing configuration via include routing',
+      args: (ctx) => ({ inboxId: ctx.inboxId, include: ['routing'] }),
       validate: (data) => {
         const routing = getObject(data, 'routing');
         requireCondition(routing?.state, 'Missing routing state');
@@ -820,10 +856,10 @@ function buildScenarios(): Scenario[] {
       },
     },
     {
-      tool: 'getCompanyCustomersHelpedReport',
+      tool: 'getCompanyReport',
       name: 'company customers helped series',
       skipIf: (ctx) => ctx.skipReports ? 'Reporting scenarios disabled by MCP_DOGFOOD_SKIP_REPORTS' : undefined,
-      args: (ctx) => ({ start: ctx.reportStart, end: ctx.reportEnd, mailboxes: [ctx.inboxId], viewBy: 'day' }),
+      args: (ctx) => ({ report: 'customers-helped', start: ctx.reportStart, end: ctx.reportEnd, mailboxes: [ctx.inboxId], viewBy: 'day' }),
       validate: (data) => {
         const report = getObject(data, 'report');
         requireCondition(report, 'Missing company customers helped report');
@@ -831,10 +867,10 @@ function buildScenarios(): Scenario[] {
       },
     },
     {
-      tool: 'getCompanyDrilldownReport',
+      tool: 'getCompanyReport',
       name: 'company drilldown conversations',
       skipIf: (ctx) => ctx.skipReports ? 'Reporting scenarios disabled by MCP_DOGFOOD_SKIP_REPORTS' : undefined,
-      args: (ctx) => ({ start: ctx.reportStart, end: ctx.reportEnd, mailboxes: [ctx.inboxId], page: 1, rows: 10, range: 'replies' }),
+      args: (ctx) => ({ report: 'drilldown', start: ctx.reportStart, end: ctx.reportEnd, mailboxes: [ctx.inboxId], page: 1, rows: 10, range: 'replies' }),
       validate: (data) => {
         const report = getObject(data, 'report');
         const conversations = getObject(report, 'conversations');
@@ -856,10 +892,10 @@ function buildScenarios(): Scenario[] {
       },
     },
     {
-      tool: 'getConversationVolumeByChannelReport',
+      tool: 'getConversationsReport',
       name: 'conversation volume by channel series',
       skipIf: (ctx) => ctx.skipReports ? 'Reporting scenarios disabled by MCP_DOGFOOD_SKIP_REPORTS' : undefined,
-      args: (ctx) => ({ start: ctx.reportStart, end: ctx.reportEnd, mailboxes: [ctx.inboxId], viewBy: 'day' }),
+      args: (ctx) => ({ report: 'volume-by-channel', start: ctx.reportStart, end: ctx.reportEnd, mailboxes: [ctx.inboxId], viewBy: 'day' }),
       validate: (data) => {
         const report = getObject(data, 'report');
         requireCondition(report, 'Missing volume by channel report');
@@ -867,20 +903,20 @@ function buildScenarios(): Scenario[] {
       },
     },
     {
-      tool: 'getConversationBusyTimesReport',
+      tool: 'getConversationsReport',
       name: 'conversation busy times report',
       skipIf: (ctx) => ctx.skipReports ? 'Reporting scenarios disabled by MCP_DOGFOOD_SKIP_REPORTS' : undefined,
-      args: (ctx) => ({ start: ctx.reportStart, end: ctx.reportEnd, mailboxes: [ctx.inboxId] }),
+      args: (ctx) => ({ report: 'busy-times', start: ctx.reportStart, end: ctx.reportEnd, mailboxes: [ctx.inboxId] }),
       validate: (data) => {
         const report = getArray(data, ['report']);
         requireCondition(report.length >= 0, 'Missing busy times report array');
       },
     },
     {
-      tool: 'getConversationDrilldownReport',
+      tool: 'getConversationsReport',
       name: 'conversation drilldown rows',
       skipIf: (ctx) => ctx.skipReports ? 'Reporting scenarios disabled by MCP_DOGFOOD_SKIP_REPORTS' : undefined,
-      args: (ctx) => ({ start: ctx.reportStart, end: ctx.reportEnd, mailboxes: [ctx.inboxId], page: 1, rows: 10 }),
+      args: (ctx) => ({ report: 'drilldown', start: ctx.reportStart, end: ctx.reportEnd, mailboxes: [ctx.inboxId], page: 1, rows: 10 }),
       validate: (data) => {
         const report = getObject(data, 'report');
         const conversations = getObject(report, 'conversations');
@@ -889,13 +925,14 @@ function buildScenarios(): Scenario[] {
       },
     },
     {
-      tool: 'getConversationFieldDrilldownReport',
+      tool: 'getConversationsReport',
       name: 'conversation field drilldown by tag',
       skipIf: (ctx) => {
         if (ctx.skipReports) return 'Reporting scenarios disabled by MCP_DOGFOOD_SKIP_REPORTS';
         return ctx.tagId ? undefined : 'No tag available for field drilldown';
       },
       args: (ctx) => ({
+        report: 'fields-drilldown',
         start: ctx.reportStart,
         end: ctx.reportEnd,
         field: 'tagid',
@@ -912,10 +949,10 @@ function buildScenarios(): Scenario[] {
       },
     },
     {
-      tool: 'getConversationNewReport',
+      tool: 'getConversationsReport',
       name: 'new conversations series',
       skipIf: (ctx) => ctx.skipReports ? 'Reporting scenarios disabled by MCP_DOGFOOD_SKIP_REPORTS' : undefined,
-      args: (ctx) => ({ start: ctx.reportStart, end: ctx.reportEnd, mailboxes: [ctx.inboxId], viewBy: 'day' }),
+      args: (ctx) => ({ report: 'new', start: ctx.reportStart, end: ctx.reportEnd, mailboxes: [ctx.inboxId], viewBy: 'day' }),
       validate: (data) => {
         const report = getObject(data, 'report');
         requireCondition(report, 'Missing new conversations report');
@@ -923,10 +960,10 @@ function buildScenarios(): Scenario[] {
       },
     },
     {
-      tool: 'getConversationNewDrilldownReport',
+      tool: 'getConversationsReport',
       name: 'new conversation drilldown rows',
       skipIf: (ctx) => ctx.skipReports ? 'Reporting scenarios disabled by MCP_DOGFOOD_SKIP_REPORTS' : undefined,
-      args: (ctx) => ({ start: ctx.reportStart, end: ctx.reportEnd, mailboxes: [ctx.inboxId], page: 1, rows: 10 }),
+      args: (ctx) => ({ report: 'new-drilldown', start: ctx.reportStart, end: ctx.reportEnd, mailboxes: [ctx.inboxId], page: 1, rows: 10 }),
       validate: (data) => {
         const report = getObject(data, 'report');
         const conversations = getObject(report, 'conversations');
@@ -935,10 +972,10 @@ function buildScenarios(): Scenario[] {
       },
     },
     {
-      tool: 'getConversationReceivedMessagesReport',
+      tool: 'getConversationsReport',
       name: 'received messages series',
       skipIf: (ctx) => ctx.skipReports ? 'Reporting scenarios disabled by MCP_DOGFOOD_SKIP_REPORTS' : undefined,
-      args: (ctx) => ({ start: ctx.reportStart, end: ctx.reportEnd, mailboxes: [ctx.inboxId], viewBy: 'day' }),
+      args: (ctx) => ({ report: 'received-messages', start: ctx.reportStart, end: ctx.reportEnd, mailboxes: [ctx.inboxId], viewBy: 'day' }),
       validate: (data) => {
         const report = getObject(data, 'report');
         requireCondition(report, 'Missing received messages report');
@@ -968,10 +1005,10 @@ function buildScenarios(): Scenario[] {
       },
     },
     {
-      tool: 'getHappinessRatingsReport',
+      tool: 'getHappinessReport',
       name: 'happiness ratings report rows',
       skipIf: (ctx) => ctx.skipReports ? 'Reporting scenarios disabled by MCP_DOGFOOD_SKIP_REPORTS' : undefined,
-      args: (ctx) => ({ start: ctx.reportStart, end: ctx.reportEnd, mailboxes: [ctx.inboxId], page: 1, sortField: 'modifiedAt', sortOrder: 'DESC', rating: 'all' }),
+      args: (ctx) => ({ report: 'ratings', start: ctx.reportStart, end: ctx.reportEnd, mailboxes: [ctx.inboxId], page: 1, sortField: 'modifiedAt', sortOrder: 'DESC', rating: 'all' }),
       validate: (data) => {
         const report = getObject(data, 'report');
         requireCondition(report, 'Missing happiness ratings report');
@@ -1009,10 +1046,10 @@ function buildScenarios(): Scenario[] {
       },
     },
     {
-      tool: 'getProductivityFirstResponseTimeReport',
+      tool: 'getProductivityReport',
       name: 'productivity first response time series',
       skipIf: (ctx) => ctx.skipReports ? 'Reporting scenarios disabled by MCP_DOGFOOD_SKIP_REPORTS' : undefined,
-      args: (ctx) => ({ start: ctx.reportStart, end: ctx.reportEnd, mailboxes: [ctx.inboxId], officeHours: false, viewBy: 'day' }),
+      args: (ctx) => ({ report: 'first-response-time', start: ctx.reportStart, end: ctx.reportEnd, mailboxes: [ctx.inboxId], officeHours: false, viewBy: 'day' }),
       validate: (data) => {
         const report = getObject(data, 'report');
         requireCondition(report, 'Missing first response time report');
@@ -1020,10 +1057,10 @@ function buildScenarios(): Scenario[] {
       },
     },
     {
-      tool: 'getProductivityRepliesSentReport',
+      tool: 'getProductivityReport',
       name: 'productivity replies sent series',
       skipIf: (ctx) => ctx.skipReports ? 'Reporting scenarios disabled by MCP_DOGFOOD_SKIP_REPORTS' : undefined,
-      args: (ctx) => ({ start: ctx.reportStart, end: ctx.reportEnd, mailboxes: [ctx.inboxId], officeHours: false, viewBy: 'day' }),
+      args: (ctx) => ({ report: 'replies-sent', start: ctx.reportStart, end: ctx.reportEnd, mailboxes: [ctx.inboxId], officeHours: false, viewBy: 'day' }),
       validate: (data) => {
         const report = getObject(data, 'report');
         requireCondition(report, 'Missing replies sent report');
@@ -1031,10 +1068,10 @@ function buildScenarios(): Scenario[] {
       },
     },
     {
-      tool: 'getProductivityResolutionTimeReport',
+      tool: 'getProductivityReport',
       name: 'productivity resolution time series',
       skipIf: (ctx) => ctx.skipReports ? 'Reporting scenarios disabled by MCP_DOGFOOD_SKIP_REPORTS' : undefined,
-      args: (ctx) => ({ start: ctx.reportStart, end: ctx.reportEnd, mailboxes: [ctx.inboxId], officeHours: false, viewBy: 'day' }),
+      args: (ctx) => ({ report: 'resolution-time', start: ctx.reportStart, end: ctx.reportEnd, mailboxes: [ctx.inboxId], officeHours: false, viewBy: 'day' }),
       validate: (data) => {
         const report = getObject(data, 'report');
         requireCondition(report, 'Missing resolution time report');
@@ -1042,10 +1079,10 @@ function buildScenarios(): Scenario[] {
       },
     },
     {
-      tool: 'getProductivityResolvedReport',
+      tool: 'getProductivityReport',
       name: 'productivity resolved series',
       skipIf: (ctx) => ctx.skipReports ? 'Reporting scenarios disabled by MCP_DOGFOOD_SKIP_REPORTS' : undefined,
-      args: (ctx) => ({ start: ctx.reportStart, end: ctx.reportEnd, mailboxes: [ctx.inboxId], officeHours: false, viewBy: 'day' }),
+      args: (ctx) => ({ report: 'resolved', start: ctx.reportStart, end: ctx.reportEnd, mailboxes: [ctx.inboxId], officeHours: false, viewBy: 'day' }),
       validate: (data) => {
         const report = getObject(data, 'report');
         requireCondition(report, 'Missing resolved report');
@@ -1053,10 +1090,10 @@ function buildScenarios(): Scenario[] {
       },
     },
     {
-      tool: 'getProductivityResponseTimeReport',
+      tool: 'getProductivityReport',
       name: 'productivity response time series',
       skipIf: (ctx) => ctx.skipReports ? 'Reporting scenarios disabled by MCP_DOGFOOD_SKIP_REPORTS' : undefined,
-      args: (ctx) => ({ start: ctx.reportStart, end: ctx.reportEnd, mailboxes: [ctx.inboxId], officeHours: false, viewBy: 'day' }),
+      args: (ctx) => ({ report: 'response-time', start: ctx.reportStart, end: ctx.reportEnd, mailboxes: [ctx.inboxId], officeHours: false, viewBy: 'day' }),
       validate: (data) => {
         const report = getObject(data, 'report');
         requireCondition(report, 'Missing response time report');
@@ -1075,10 +1112,10 @@ function buildScenarios(): Scenario[] {
       },
     },
     {
-      tool: 'getUserConversationHistoryReport',
+      tool: 'getUserReport',
       name: 'user conversation history rows',
       skipIf: (ctx) => ctx.skipReports ? 'Reporting scenarios disabled by MCP_DOGFOOD_SKIP_REPORTS' : undefined,
-      args: (ctx) => ({ user: ctx.userId ?? '0', start: ctx.reportStart, end: ctx.reportEnd, mailboxes: [ctx.inboxId], officeHours: false, page: 1 }),
+      args: (ctx) => ({ report: 'conversation-history', user: ctx.userId ?? '0', start: ctx.reportStart, end: ctx.reportEnd, mailboxes: [ctx.inboxId], officeHours: false, page: 1 }),
       validate: (data) => {
         const report = getObject(data, 'report');
         requireCondition(report, 'Missing user conversation history report');
@@ -1087,10 +1124,10 @@ function buildScenarios(): Scenario[] {
       },
     },
     {
-      tool: 'getUserCustomersHelpedReport',
+      tool: 'getUserReport',
       name: 'user customers helped series',
       skipIf: (ctx) => ctx.skipReports ? 'Reporting scenarios disabled by MCP_DOGFOOD_SKIP_REPORTS' : undefined,
-      args: (ctx) => ({ user: ctx.userId ?? '0', start: ctx.reportStart, end: ctx.reportEnd, mailboxes: [ctx.inboxId], viewBy: 'day' }),
+      args: (ctx) => ({ report: 'customers-helped', user: ctx.userId ?? '0', start: ctx.reportStart, end: ctx.reportEnd, mailboxes: [ctx.inboxId], viewBy: 'day' }),
       validate: (data) => {
         const report = getObject(data, 'report');
         requireCondition(report, 'Missing user customers helped report');
@@ -1098,10 +1135,10 @@ function buildScenarios(): Scenario[] {
       },
     },
     {
-      tool: 'getUserDrilldownReport',
+      tool: 'getUserReport',
       name: 'user drilldown conversations',
       skipIf: (ctx) => ctx.skipReports ? 'Reporting scenarios disabled by MCP_DOGFOOD_SKIP_REPORTS' : undefined,
-      args: (ctx) => ({ user: ctx.userId ?? '0', start: ctx.reportStart, end: ctx.reportEnd, mailboxes: [ctx.inboxId], page: 1, rows: 10 }),
+      args: (ctx) => ({ report: 'drilldown', user: ctx.userId ?? '0', start: ctx.reportStart, end: ctx.reportEnd, mailboxes: [ctx.inboxId], page: 1, rows: 10 }),
       validate: (data) => {
         const report = getObject(data, 'report');
         const conversations = getObject(report, 'conversations');
@@ -1111,10 +1148,10 @@ function buildScenarios(): Scenario[] {
       },
     },
     {
-      tool: 'getUserHappinessReport',
+      tool: 'getUserReport',
       name: 'user happiness report',
       skipIf: (ctx) => ctx.skipReports ? 'Reporting scenarios disabled by MCP_DOGFOOD_SKIP_REPORTS' : undefined,
-      args: (ctx) => ({ user: ctx.userId ?? '0', start: ctx.reportStart, end: ctx.reportEnd, mailboxes: [ctx.inboxId] }),
+      args: (ctx) => ({ report: 'happiness', user: ctx.userId ?? '0', start: ctx.reportStart, end: ctx.reportEnd, mailboxes: [ctx.inboxId] }),
       validate: (data) => {
         const report = getObject(data, 'report');
         requireCondition(report, 'Missing user happiness report');
@@ -1122,10 +1159,10 @@ function buildScenarios(): Scenario[] {
       },
     },
     {
-      tool: 'getUserRatingsReport',
+      tool: 'getUserReport',
       name: 'user happiness rating rows',
       skipIf: (ctx) => ctx.skipReports ? 'Reporting scenarios disabled by MCP_DOGFOOD_SKIP_REPORTS' : undefined,
-      args: (ctx) => ({ user: ctx.userId ?? '0', start: ctx.reportStart, end: ctx.reportEnd, mailboxes: [ctx.inboxId], page: 1, rating: 'all' }),
+      args: (ctx) => ({ report: 'ratings', user: ctx.userId ?? '0', start: ctx.reportStart, end: ctx.reportEnd, mailboxes: [ctx.inboxId], page: 1, rating: 'all' }),
       validate: (data) => {
         const report = getObject(data, 'report');
         requireCondition(report, 'Missing user ratings report');
@@ -1133,10 +1170,10 @@ function buildScenarios(): Scenario[] {
       },
     },
     {
-      tool: 'getUserRepliesReport',
+      tool: 'getUserReport',
       name: 'user replies series',
       skipIf: (ctx) => ctx.skipReports ? 'Reporting scenarios disabled by MCP_DOGFOOD_SKIP_REPORTS' : undefined,
-      args: (ctx) => ({ user: ctx.userId ?? '0', start: ctx.reportStart, end: ctx.reportEnd, mailboxes: [ctx.inboxId], viewBy: 'day' }),
+      args: (ctx) => ({ report: 'replies', user: ctx.userId ?? '0', start: ctx.reportStart, end: ctx.reportEnd, mailboxes: [ctx.inboxId], viewBy: 'day' }),
       validate: (data) => {
         const report = getObject(data, 'report');
         requireCondition(report, 'Missing user replies report');
@@ -1144,10 +1181,10 @@ function buildScenarios(): Scenario[] {
       },
     },
     {
-      tool: 'getUserResolutionsReport',
+      tool: 'getUserReport',
       name: 'user resolutions series',
       skipIf: (ctx) => ctx.skipReports ? 'Reporting scenarios disabled by MCP_DOGFOOD_SKIP_REPORTS' : undefined,
-      args: (ctx) => ({ user: ctx.userId ?? '0', start: ctx.reportStart, end: ctx.reportEnd, mailboxes: [ctx.inboxId], viewBy: 'day' }),
+      args: (ctx) => ({ report: 'resolutions', user: ctx.userId ?? '0', start: ctx.reportStart, end: ctx.reportEnd, mailboxes: [ctx.inboxId], viewBy: 'day' }),
       validate: (data) => {
         const report = getObject(data, 'report');
         requireCondition(report, 'Missing user resolutions report');
@@ -1155,10 +1192,10 @@ function buildScenarios(): Scenario[] {
       },
     },
     {
-      tool: 'getUserChatReport',
+      tool: 'getUserReport',
       name: 'user chat report',
       skipIf: (ctx) => ctx.skipReports ? 'Reporting scenarios disabled by MCP_DOGFOOD_SKIP_REPORTS' : undefined,
-      args: (ctx) => ({ user: ctx.userId ?? '0', start: ctx.reportStart, end: ctx.reportEnd, mailboxes: [ctx.inboxId], officeHours: false }),
+      args: (ctx) => ({ report: 'chat', user: ctx.userId ?? '0', start: ctx.reportStart, end: ctx.reportEnd, mailboxes: [ctx.inboxId], officeHours: false }),
       validate: (data) => {
         const report = getObject(data, 'report');
         requireCondition(report, 'Missing user chat report');
@@ -1166,10 +1203,10 @@ function buildScenarios(): Scenario[] {
       },
     },
     {
-      tool: 'getChatReport',
-      name: 'chat report',
+      tool: 'getChannelReport',
+      name: 'chat channel report',
       skipIf: (ctx) => ctx.skipReports ? 'Reporting scenarios disabled by MCP_DOGFOOD_SKIP_REPORTS' : undefined,
-      args: (ctx) => ({ start: ctx.reportStart, end: ctx.reportEnd, mailboxes: [ctx.inboxId], officeHours: false }),
+      args: (ctx) => ({ channel: 'chat', start: ctx.reportStart, end: ctx.reportEnd, mailboxes: [ctx.inboxId], officeHours: false }),
       validate: (data) => {
         const report = getObject(data, 'report');
         requireCondition(report, 'Missing chat report');
@@ -1177,10 +1214,10 @@ function buildScenarios(): Scenario[] {
       },
     },
     {
-      tool: 'getEmailReport',
-      name: 'email report',
+      tool: 'getChannelReport',
+      name: 'email channel report',
       skipIf: (ctx) => ctx.skipReports ? 'Reporting scenarios disabled by MCP_DOGFOOD_SKIP_REPORTS' : undefined,
-      args: (ctx) => ({ start: ctx.reportStart, end: ctx.reportEnd, mailboxes: [ctx.inboxId], officeHours: false }),
+      args: (ctx) => ({ channel: 'email', start: ctx.reportStart, end: ctx.reportEnd, mailboxes: [ctx.inboxId], officeHours: false }),
       validate: (data) => {
         const report = getObject(data, 'report');
         requireCondition(report, 'Missing email report');
@@ -1188,10 +1225,10 @@ function buildScenarios(): Scenario[] {
       },
     },
     {
-      tool: 'getPhoneReport',
-      name: 'phone report',
+      tool: 'getChannelReport',
+      name: 'phone channel report',
       skipIf: (ctx) => ctx.skipReports ? 'Reporting scenarios disabled by MCP_DOGFOOD_SKIP_REPORTS' : undefined,
-      args: (ctx) => ({ start: ctx.reportStart, end: ctx.reportEnd, mailboxes: [ctx.inboxId], officeHours: false }),
+      args: (ctx) => ({ channel: 'phone', start: ctx.reportStart, end: ctx.reportEnd, mailboxes: [ctx.inboxId], officeHours: false }),
       validate: (data) => {
         const report = getObject(data, 'report');
         requireCondition(report, 'Missing phone report');
@@ -1283,7 +1320,7 @@ function buildScenarios(): Scenario[] {
       },
     },
     {
-      tool: 'advancedConversationSearch',
+      tool: 'searchConversations',
       name: 'content terms',
       args: { contentTerms: [GOLDEN.searchTerm], limit: 3 },
       validate: (data) => {
@@ -1291,7 +1328,7 @@ function buildScenarios(): Scenario[] {
       },
     },
     {
-      tool: 'advancedConversationSearch',
+      tool: 'searchConversations',
       name: 'subject terms',
       args: { subjectTerms: [GOLDEN.searchTerm], limit: 3 },
       validate: (data) => {
@@ -1299,15 +1336,15 @@ function buildScenarios(): Scenario[] {
       },
     },
     {
-      tool: 'advancedConversationSearch',
-      name: 'customer email',
-      args: { customerEmail: GOLDEN.customerEmail, limit: 5 },
+      tool: 'searchConversations',
+      name: 'customer email filter',
+      args: { email: GOLDEN.customerEmail, limit: 5 },
       validate: (data) => {
         requireArray(data, ['results', 'conversations'], 'conversations');
       },
     },
     {
-      tool: 'advancedConversationSearch',
+      tool: 'searchConversations',
       name: 'email domain',
       args: { emailDomain: GOLDEN.organizationDomain, limit: 5 },
       validate: (data) => {
@@ -1315,9 +1352,9 @@ function buildScenarios(): Scenario[] {
       },
     },
     {
-      tool: 'advancedConversationSearch',
-      name: 'tags plus status',
-      args: { tags: [GOLDEN.tag], status: 'closed', limit: 5 },
+      tool: 'searchConversations',
+      name: 'tag plus status',
+      args: { tag: GOLDEN.tag, status: 'closed', limit: 5 },
       validate: (data) => {
         const conversations = requireArray(data, ['results', 'conversations'], 'conversations') as JsonObject[];
         for (const conversation of conversations) {
@@ -1326,10 +1363,10 @@ function buildScenarios(): Scenario[] {
       },
     },
     {
-      tool: 'advancedConversationSearch',
-      name: 'inbox and date bounds',
+      tool: 'searchConversations',
+      name: 'content terms with explicit date bounds',
       args: (ctx) => ({
-        inboxId: ctx.inboxId,
+        contentTerms: [GOLDEN.searchTerm],
         createdAfter: ctx.createdAfter ?? dateDaysAgo(365),
         createdBefore: ctx.createdBefore ?? dateDaysAhead(1),
         limit: 3,
@@ -1339,54 +1376,16 @@ function buildScenarios(): Scenario[] {
       },
     },
     {
-      tool: 'comprehensiveConversationSearch',
-      name: 'default statuses and both search',
-      args: { searchTerms: [GOLDEN.searchTerm], timeframeDays: 365, limitPerStatus: 3 },
+      tool: 'searchConversations',
+      name: 'all statuses including spam via status enum',
+      args: { contentTerms: [GOLDEN.searchTerm], status: 'all', limit: 3 },
       validate: (data) => {
-        requireArray(data, ['resultsByStatus'], 'resultsByStatus');
-      },
-    },
-    ...(['body', 'subject', 'both'] as const).map((searchIn): Scenario => ({
-      tool: 'comprehensiveConversationSearch',
-      name: `searchIn ${searchIn}`,
-      args: { searchTerms: [GOLDEN.searchTerm], searchIn: [searchIn], timeframeDays: 365, limitPerStatus: 2 },
-      validate: (data) => {
-        requireArray(data, ['resultsByStatus'], 'resultsByStatus');
-      },
-    })),
-    {
-      tool: 'comprehensiveConversationSearch',
-      name: 'all statuses including spam',
-      args: { searchTerms: [GOLDEN.searchTerm], statuses: ['active', 'pending', 'closed', 'spam'], timeframeDays: 365, limitPerStatus: 2 },
-      validate: (data) => {
-        requireArray(data, ['resultsByStatus'], 'resultsByStatus');
+        requireArray(data, ['results', 'conversations'], 'conversations');
       },
     },
     {
-      tool: 'comprehensiveConversationSearch',
-      name: 'explicit date bounds',
-      args: (ctx) => ({
-        searchTerms: [GOLDEN.searchTerm],
-        createdAfter: ctx.createdAfter ?? dateDaysAgo(365),
-        createdBefore: ctx.createdBefore ?? dateDaysAhead(1),
-        limitPerStatus: 2,
-      }),
-      validate: (data) => {
-        requireArray(data, ['resultsByStatus'], 'resultsByStatus');
-      },
-    },
-    {
-      tool: 'comprehensiveConversationSearch',
-      name: 'required search terms validation',
-      args: { searchTerms: [], limitPerStatus: 1 },
-      expectError: true,
-      validate: (data) => {
-        requireCondition(data !== undefined, 'Expected validation response');
-      },
-    },
-    {
-      tool: 'structuredConversationFilter',
-      name: 'customer IDs',
+      tool: 'searchConversations',
+      name: 'customer IDs filter',
       args: (ctx) => ({ customerIds: [Number(ctx.customerId)], limit: 5 }),
       validate: (data) => {
         requireArray(data, ['results', 'conversations'], 'conversations');
@@ -1400,15 +1399,15 @@ function buildScenarios(): Scenario[] {
       },
     },
     {
-      tool: 'structuredConversationFilter',
-      name: 'conversation number',
+      tool: 'searchConversations',
+      name: 'conversation number lookup',
       args: (ctx) => ({ conversationNumber: ctx.conversationNumber ?? 1 }),
       validate: (data) => {
         requireArray(data, ['results', 'conversations'], 'conversations');
       },
     },
     {
-      tool: 'structuredConversationFilter',
+      tool: 'searchConversations',
       name: 'unassigned lookup',
       args: { assignedTo: -1, limit: 3 },
       validate: (data) => {
@@ -1416,7 +1415,7 @@ function buildScenarios(): Scenario[] {
       },
     },
     ...(['all', 'active', 'pending', 'closed', 'spam'] as const).map((status): Scenario => ({
-      tool: 'structuredConversationFilter',
+      tool: 'searchConversations',
       name: `status ${status} with customer filter`,
       args: (ctx) => ({ customerIds: [Number(ctx.customerId)], status, limit: 3 }),
       validate: (data) => {
@@ -1427,23 +1426,14 @@ function buildScenarios(): Scenario[] {
         }
       },
     })),
-    ...(['waitingSince', 'customerName', 'customerEmail'] as const).map((sortBy): Scenario => ({
-      tool: 'structuredConversationFilter',
-      name: `unique sort ${sortBy}`,
-      args: { sortBy, sortOrder: 'asc', limit: 3 },
+    ...(['waitingSince', 'customerName', 'customerEmail'] as const).map((sort): Scenario => ({
+      tool: 'searchConversations',
+      name: `sort ${sort}`,
+      args: { sort, order: 'asc', limit: 3 },
       validate: (data) => {
         requireArray(data, ['results', 'conversations'], 'conversations');
       },
     })),
-    {
-      tool: 'structuredConversationFilter',
-      name: 'missing unique field validation',
-      args: { status: 'all', limit: 1 },
-      expectError: true,
-      validate: (data) => {
-        requireCondition(data !== undefined, 'Expected validation response');
-      },
-    },
     {
       tool: 'getConversation',
       name: 'raw conversation detail',
@@ -1466,9 +1456,9 @@ function buildScenarios(): Scenario[] {
       },
     },
     {
-      tool: 'getConversationV3',
-      name: 'v3 raw conversation detail',
-      args: (ctx) => ({ conversationId: ctx.conversationId ?? '1' }),
+      tool: 'getConversation',
+      name: 'v3 raw conversation detail via includeSystemActors',
+      args: (ctx) => ({ conversationId: ctx.conversationId ?? '1', includeSystemActors: true }),
       validate: (data) => {
         const response = data as JsonObject;
         requireCondition(response.apiVersion === 'v3', 'Missing v3 API marker');
@@ -1478,9 +1468,9 @@ function buildScenarios(): Scenario[] {
       },
     },
     {
-      tool: 'getConversationV3',
-      name: 'v3 raw conversation with embedded threads',
-      args: (ctx) => ({ conversationId: ctx.conversationId ?? '1', embed: 'threads' }),
+      tool: 'getConversation',
+      name: 'v3 raw conversation with embedded threads via includeSystemActors',
+      args: (ctx) => ({ conversationId: ctx.conversationId ?? '1', embed: 'threads', includeSystemActors: true }),
       validate: (data) => {
         const conversation = getObject(data, 'conversation');
         requireCondition(conversation?.id, 'Missing v3 raw conversation');
@@ -1530,9 +1520,9 @@ function buildScenarios(): Scenario[] {
       },
     },
     {
-      tool: 'getThreadsV3',
-      name: 'v3 threads default limit',
-      args: (ctx) => ({ conversationId: ctx.conversationId ?? '1' }),
+      tool: 'getThreads',
+      name: 'v3 threads default limit via includeSystemActors',
+      args: (ctx) => ({ conversationId: ctx.conversationId ?? '1', includeSystemActors: true }),
       validate: (data) => {
         const response = data as JsonObject;
         requireCondition(response.apiVersion === 'v3', 'Missing v3 API marker');
@@ -1540,9 +1530,9 @@ function buildScenarios(): Scenario[] {
       },
     },
     {
-      tool: 'getThreadsV3',
-      name: 'v3 threads limit permutation',
-      args: (ctx) => ({ conversationId: ctx.conversationId ?? '1', limit: 1 }),
+      tool: 'getThreads',
+      name: 'v3 threads limit permutation via includeSystemActors',
+      args: (ctx) => ({ conversationId: ctx.conversationId ?? '1', limit: 1, includeSystemActors: true }),
       validate: (data) => {
         const threads = requireArray(data, ['threads'], 'v3 threads');
         requireCondition(threads.length <= 1, `Expected at most 1 v3 thread, got ${threads.length}`);
@@ -1606,7 +1596,7 @@ function buildScenarios(): Scenario[] {
       },
     },
     {
-      tool: 'getOriginalSourceRfc822',
+      tool: 'getOriginalSource',
       name: 'discovered thread original source RFC 822',
       skipIf: (ctx) => ctx.originalSourceConversationId && ctx.originalSourceThreadId
         ? undefined
@@ -1614,6 +1604,7 @@ function buildScenarios(): Scenario[] {
       args: (ctx) => ({
         conversationId: ctx.originalSourceConversationId ?? '1',
         threadId: ctx.originalSourceThreadId ?? '1',
+        format: 'rfc822',
       }),
       validate: (data) => {
         const response = data as JsonObject;
@@ -1730,9 +1721,9 @@ function buildScenarios(): Scenario[] {
       },
     },
     {
-      tool: 'listCustomersV3',
-      name: 'v3 first-name listing',
-      args: (ctx) => ({ firstName: GOLDEN.customerFirstName, createdSince: dateDaysAgo(365), modifiedSince: dateDaysAgo(365) }),
+      tool: 'listCustomers',
+      name: 'v3 first-name listing via useV3',
+      args: (ctx) => ({ useV3: true, firstName: GOLDEN.customerFirstName, createdSince: dateDaysAgo(365), modifiedSince: dateDaysAgo(365) }),
       validate: (data) => {
         const customers = requireArray(data, ['results', 'customers'], 'customers') as JsonObject[];
         requireCondition(customers.some((customer) => String(customer.id) === GOLDEN.customerId), 'Golden customer not found in v3 list');
@@ -1743,15 +1734,15 @@ function buildScenarios(): Scenario[] {
       },
     },
     {
-      tool: 'listCustomersV3',
-      name: 'v3 query syntax listing',
-      args: (ctx) => ({ query: `(email:"${ctx.customerEmail}")` }),
+      tool: 'listCustomers',
+      name: 'v3 query syntax listing via useV3',
+      args: (ctx) => ({ useV3: true, query: `(email:"${ctx.customerEmail}")` }),
       validate: (data) => {
         requireArray(data, ['results', 'customers'], 'customers');
       },
     },
     {
-      tool: 'listCustomersV3',
+      tool: 'listCustomers',
       name: 'v3 cursor pagination',
       skipIf: (ctx) => ctx.nextCustomerCursor ? undefined : 'no next customer cursor returned by prior v3 call',
       args: (ctx) => ({ firstName: GOLDEN.customerFirstName, cursor: ctx.nextCustomerCursor ?? 'not-a-real-cursor' }),
@@ -1801,53 +1792,37 @@ function buildScenarios(): Scenario[] {
       },
     },
     {
-      tool: 'getCustomerAddress',
-      name: 'golden customer address',
+      tool: 'getCustomerContacts',
+      name: 'golden customer address via contacts',
       args: (ctx) => ({ customerId: ctx.customerId }),
       validate: (data) => {
-        const address = getObject(data, 'address');
+        const address = getObject(data, 'address') ?? getObject(getObject(data, 'contacts'), 'address');
         requireCondition(address?.country, 'Missing customer address');
       },
     },
     {
-      tool: 'listCustomerEmails',
-      name: 'golden customer emails',
+      tool: 'getCustomerContacts',
+      name: 'golden customer emails via contacts',
       args: (ctx) => ({ customerId: ctx.customerId }),
       validate: (data) => {
-        const emails = requireArray(data, ['emails'], 'emails') as JsonObject[];
+        const emails = (getArray(data, ['emails']).length > 0
+          ? getArray(data, ['emails'])
+          : getArray(getObject(data, 'contacts'), ['emails'])) as JsonObject[];
         requireCondition(emails.some((email) => email.value === GOLDEN.customerEmail), 'Missing golden customer email');
       },
     },
     {
-      tool: 'listCustomerPhones',
-      name: 'golden customer phones',
+      tool: 'getCustomerContacts',
+      name: 'golden customer phones, chats, social profiles, websites via contacts',
       args: (ctx) => ({ customerId: ctx.customerId }),
       validate: (data) => {
-        requireCondition(requireArray(data, ['phones'], 'phones').length > 0, 'Missing customer phones');
-      },
-    },
-    {
-      tool: 'listCustomerChats',
-      name: 'golden customer chats',
-      args: (ctx) => ({ customerId: ctx.customerId }),
-      validate: (data) => {
-        requireCondition(requireArray(data, ['chats'], 'chats').length > 0, 'Missing customer chat handles');
-      },
-    },
-    {
-      tool: 'listCustomerSocialProfiles',
-      name: 'golden customer social profiles',
-      args: (ctx) => ({ customerId: ctx.customerId }),
-      validate: (data) => {
-        requireCondition(requireArray(data, ['socialProfiles'], 'socialProfiles').length > 0, 'Missing customer social profiles');
-      },
-    },
-    {
-      tool: 'listCustomerWebsites',
-      name: 'golden customer websites',
-      args: (ctx) => ({ customerId: ctx.customerId }),
-      validate: (data) => {
-        requireCondition(requireArray(data, ['websites'], 'websites').length > 0, 'Missing customer websites');
+        const contacts = getObject(data, 'contacts');
+        const sub = (key: string): unknown[] =>
+          getArray(data, [key]).length > 0 ? getArray(data, [key]) : getArray(contacts, [key]);
+        requireCondition(sub('phones').length > 0, 'Missing customer phones');
+        requireCondition(sub('chats').length > 0, 'Missing customer chat handles');
+        requireCondition(sub('socialProfiles').length > 0, 'Missing customer social profiles');
+        requireCondition(sub('websites').length > 0, 'Missing customer websites');
       },
     },
     {
@@ -1968,9 +1943,9 @@ function buildScenarios(): Scenario[] {
       },
     },
     {
-      tool: 'getDocsSiteRestrictions',
-      name: 'Docs site restrictions',
-      args: (ctx) => ({ siteId: ctx.docsSiteId ?? 'missing-site' }),
+      tool: 'getDocsSite',
+      name: 'Docs site restrictions via includeRestrictions',
+      args: (ctx) => ({ siteId: ctx.docsSiteId ?? 'missing-site', includeRestrictions: true }),
       skipIf: (ctx) => missingDocsCredentials() || (!ctx.docsSiteId ? 'no Docs site fixture discovered or configured' : undefined),
       validate: (data) => {
         const restrictions = getObject(data, 'restrictions');
@@ -2139,6 +2114,7 @@ async function runMainMatrix(): Promise<DogfoodContext> {
 
   try {
     assertToolDiscovery(ctx);
+    await assertOperationReachability(session);
     assertScenarioCoverage(scenarios);
     for (const scenario of scenarios) {
       await runScenario(session, ctx, scenario);
@@ -2168,6 +2144,12 @@ async function runRedactionMatrix(baseCtx: DogfoodContext): Promise<void> {
       validate: (data) => {
         const firstCustomerMessage = getObject(data, 'firstCustomerMessage');
         const latestStaffReply = getObject(data, 'latestStaffReply');
+        // The redaction gate must actually assert on a body: a shape change
+        // that drops both bodies would otherwise pass without checking anything.
+        requireCondition(
+          firstCustomerMessage?.body || latestStaffReply?.body,
+          'Redaction check needs at least one message body in the summary; fixture conversation has none'
+        );
         if (firstCustomerMessage?.body) {
           requireCondition(isRedactedBody(firstCustomerMessage.body), `First customer body not hidden: ${String(firstCustomerMessage.body).slice(0, 80)}`);
         }
@@ -2186,23 +2168,23 @@ async function runRedactionMatrix(baseCtx: DogfoodContext): Promise<void> {
       args: (scenarioCtx) => ({ conversationId: scenarioCtx.conversationId ?? '1', limit: 5 }),
       validate: (data) => {
         const threads = requireArray(data, ['threads'], 'threads') as JsonObject[];
-        for (const thread of threads) {
-          if (thread.body) {
-            requireCondition(isRedactedBody(thread.body), `Thread body not hidden: ${String(thread.body).slice(0, 80)}`);
-          }
+        const bodied = threads.filter((thread) => thread.body);
+        requireCondition(bodied.length > 0, 'Redaction check needs at least one thread with a body; fixture conversation has none');
+        for (const thread of bodied) {
+          requireCondition(isRedactedBody(thread.body), `Thread body not hidden: ${String(thread.body).slice(0, 80)}`);
         }
       },
     },
     {
-      tool: 'getThreadsV3',
-      name: 'v3 thread bodies are hidden',
-      args: (scenarioCtx) => ({ conversationId: scenarioCtx.conversationId ?? '1', limit: 5 }),
+      tool: 'getThreads',
+      name: 'v3 thread bodies are hidden via includeSystemActors',
+      args: (scenarioCtx) => ({ conversationId: scenarioCtx.conversationId ?? '1', limit: 5, includeSystemActors: true }),
       validate: (data) => {
         const threads = requireArray(data, ['threads'], 'v3 threads') as JsonObject[];
-        for (const thread of threads) {
-          if (thread.body) {
-            requireCondition(isRedactedBody(thread.body), `V3 thread body not hidden: ${String(thread.body).slice(0, 80)}`);
-          }
+        const bodied = threads.filter((thread) => thread.body);
+        requireCondition(bodied.length > 0, 'Redaction check needs at least one v3 thread with a body; fixture conversation has none');
+        for (const thread of bodied) {
+          requireCondition(isRedactedBody(thread.body), `V3 thread body not hidden: ${String(thread.body).slice(0, 80)}`);
         }
       },
     },
@@ -2303,6 +2285,7 @@ function printSummary(ctx: DogfoodContext): void {
   const byStatus = {
     pass: results.filter((result) => result.status === 'PASS'),
     fail: results.filter((result) => result.status === 'FAIL'),
+    skip: results.filter((result) => result.status === 'SKIP'),
   };
   const byTool = new Map<string, ScenarioResult[]>();
   for (const result of results) {
@@ -2324,8 +2307,15 @@ function printSummary(ctx: DogfoodContext): void {
     }
   }
 
+  if (byStatus.skip.length > 0) {
+    process.stderr.write('\nSkipped (missing fixtures reduce coverage; seed or configure them):\n');
+    for (const skipped of byStatus.skip) {
+      process.stderr.write(`  [SKIP] ${skipped.tool}: ${skipped.name}: ${skipped.detail}\n`);
+    }
+  }
+
   const totalMs = results.reduce((sum, result) => sum + result.durationMs, 0);
-  process.stderr.write(`\n${byStatus.pass.length} passed, ${byStatus.fail.length} failed, ${results.length} total`);
+  process.stderr.write(`\n${byStatus.pass.length} passed, ${byStatus.fail.length} failed, ${byStatus.skip.length} skipped, ${results.length} total`);
   process.stderr.write(` (${(totalMs / 1000).toFixed(1)}s summed tool time)\n\n`);
   printFixtureHints(ctx);
 

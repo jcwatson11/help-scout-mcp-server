@@ -5,7 +5,7 @@ description: Use when searching HelpScout tickets, customers, or organizations. 
 
 # HelpScout Navigation
 
-Guide for correctly using HelpScout MCP tools. Prevents common mistakes and ensures complete search results.
+Guide for correctly using the Help Scout MCP gateway. Prevents common mistakes and ensures complete search results.
 
 ## First Step: Diagnose Setup
 
@@ -15,10 +15,10 @@ Follow these steps IN ORDER. Do not skip ahead.
 
 ### Step 1: Check if MCP Tools are Available
 
-Look for these tools in your available tools:
-- `mcp__helpscout__searchInboxes`
-- `mcp__helpscout__searchConversations`
-- `mcp__helpscout__comprehensiveConversationSearch`
+Look for these three tools in your available tools:
+- `mcp__helpscout__search_help_scout`
+- `mcp__helpscout__describe_help_scout`
+- `mcp__helpscout__read_help_scout`
 
 **If tools ARE available:** ✅ Skip to "Critical Rules" section. You're ready to go.
 
@@ -79,7 +79,7 @@ Tell the user:
 > claude
 > ```
 >
-> The HelpScout MCP server will now start with the correct credentials.
+> The Help Scout MCP server will now start with the correct credentials.
 
 **Do not proceed with HelpScout operations until the MCP tools are available.**
 
@@ -87,63 +87,56 @@ Tell the user:
 
 ## Overview
 
-The HelpScout MCP server provides 17 tools for searching and retrieving support conversations. However, using them incorrectly leads to missed tickets and incomplete results. This skill ensures you use the right tool in the right order.
+The Help Scout MCP server advertises exactly three tools. Behind them sits a registry of 55 read-only operations covering conversations, customers, organizations, reports, metadata, and Docs:
+
+| Tool | Purpose |
+|------|---------|
+| `search_help_scout` | Find operations by intent. Returns up to 8 name + description summaries. |
+| `describe_help_scout` | Get full input schemas for up to 10 named operations. |
+| `read_help_scout` | Execute one operation: `{"name": "<operation>", "arguments": {...}}` |
+
+**The flow is always:** search for operations → describe the one(s) you picked → execute with `read_help_scout`.
 
 **Core problems this skill solves:**
-1. Users forget to call `searchInboxes` first (required for inbox-scoped searches)
-2. `searchConversations` defaults to "active" status only (misses closed/pending)
-3. Users don't know which search tool to use for their query type
-4. Users don't know the customer/org lookup tools for account investigation
-5. Users try conversation search when they should use customer or org tools
+1. Users guess argument shapes instead of calling `describe_help_scout` first
+2. Users look up inbox IDs when they are already in the server instructions
+3. Users don't know which operation fits their query type
+4. Users reach for conversation search when a customer, org, report, metadata, or Docs operation fits better
 
 ---
 
 ## Critical Rules (MUST READ FIRST)
 
-### Rule 1: ALWAYS Call searchInboxes First
+### Rule 1: Route Through the Gateway
 
-**When a user mentions an inbox by name, you MUST look up the inbox ID before searching.**
+1. `search_help_scout(query: "<user's intent>")` to find candidate operations
+2. `describe_help_scout(names: ["<operation>"])` to get the exact input schema
+3. `read_help_scout(name: "<operation>", arguments: {...})` to execute
 
-| User Says | You MUST Do First |
-|-----------|-------------------|
-| "Search the support inbox" | `searchInboxes(query: "support")` |
-| "Find tickets in sales mailbox" | `searchInboxes(query: "sales")` |
-| "Check the billing inbox" | `searchInboxes(query: "billing")` |
+Operation names in the registry also dispatch directly as legacy compatibility, but always route through the gateway: `search_help_scout` surfaces the right operation and `describe_help_scout` gives you the real schema instead of a guess.
 
-**Why:** All inbox-scoped searches require an inbox ID (numeric), not a name.
+### Rule 2: Inbox IDs Come From Server Instructions
 
-### Rule 2: searchConversations Defaults to "Active" Only
+Inboxes are auto-discovered at connect time and listed in the server instructions with their IDs. **No lookup call is needed.** Use the numeric ID from there. Only call `listAllInboxes` (optionally with `nameContains`) if you need to re-check mid-session.
 
-**DANGER:** `searchConversations` without a status parameter only returns active tickets.
+### Rule 3: searchConversations is THE Conversation Search
 
-| What You Want | WRONG Tool | RIGHT Tool |
-|---------------|------------|------------|
-| "Find tickets about billing" | `searchConversations(query: "billing")` | `comprehensiveConversationSearch(searchTerms: ["billing"])` |
-| "Search for refund requests" | `searchConversations(query: "refund")` | `comprehensiveConversationSearch(searchTerms: ["refund"])` |
+`searchConversations` is the only conversation search and list operation. It searches **active + pending + closed by default** (spam excluded), so keyword searches do not silently miss closed tickets. Convenience filters: `contentTerms`, `subjectTerms`, `email`, `emailDomain`, `customerIds`, `hasAttachments`, `inboxId`, `folderId`, `tag`, `status`, `createdAfter`/`createdBefore`, `conversationNumber`, `assignedTo`.
 
-**Use `searchConversations` ONLY when:**
-- Listing recent tickets (no keyword search)
-- You explicitly want only active tickets
-- Combined with explicit status parameter
+### Migration Note (older guidance)
 
-**Use `comprehensiveConversationSearch` when:**
-- Searching by keywords
-- You want to find tickets regardless of status
-- Default behavior (searches active + pending + closed)
+If you have seen older docs for this server, these operations are gone:
 
-### Rule 3: structuredConversationFilter is for AFTER Discovery
-
-**This tool requires IDs from previous searches. Do NOT use for initial searches.**
-
-| Use Case | Correct Approach |
-|----------|------------------|
-| Find ticket #42839 | `structuredConversationFilter(conversationNumber: 42839)` |
-| Find John's assigned tickets | First: get John's ID. Then: `structuredConversationFilter(assignedTo: <johnId>)` |
-| Find customer 12345's history | `structuredConversationFilter(customerIds: [12345])` |
+| Removed | Use instead |
+|---------|-------------|
+| `searchInboxes` | `listAllInboxes` (optionally `nameContains`), or just the server instructions |
+| `comprehensiveConversationSearch`, `advancedConversationSearch`, `structuredConversationFilter` | `searchConversations` with convenience filters |
+| `listCustomersV3` | `listCustomers` with `useV3` / `cursor` |
+| `getCustomerAddress` and other customer contact sub-resources | `getCustomerContacts` |
 
 ---
 
-## Decision Tree: Which Tool to Use
+## Decision Tree: Which Operation to Use
 
 ```dot
 digraph decision {
@@ -151,85 +144,52 @@ digraph decision {
     node [shape=box, style=rounded];
 
     start [label="Start", shape=ellipse];
-    inbox_q [label="User mentions\ninbox name?", shape=diamond];
-    searchInboxes [label="searchInboxes\n(ALWAYS FIRST)", style="bold,filled", fillcolor="#ffcccc"];
-    keyword_q [label="Keyword\nsearch?", shape=diamond];
-    comprehensive [label="comprehensiveConversationSearch\n(multi-status)", style="bold,filled", fillcolor="#ccffcc"];
-    listing_q [label="Listing by\ntime/status?", shape=diamond];
+    know_op [label="Know which\noperation?", shape=diamond];
+    search_gw [label="search_help_scout\n(intent query)", style="bold,filled", fillcolor="#ffcccc"];
+    describe [label="describe_help_scout\n(get schema)", style="bold,filled", fillcolor="#ccffcc"];
+    execute [label="read_help_scout\n(name + arguments)"];
+    conv_q [label="Conversation\nsearch/list?", shape=diamond];
     searchConv [label="searchConversations"];
-    complex_q [label="Complex filters?\n(domain, tags)", shape=diamond];
-    advanced [label="advancedConversationSearch"];
-    has_ids [label="Have IDs from\nprior search?", shape=diamond];
-    structured [label="structuredConversationFilter"];
-    thread_q [label="Need full\nthread?", shape=diamond];
-    getThreads [label="getThreads"];
-    summary_q [label="Need quick\nsummary?", shape=diamond];
-    getSummary [label="getConversationSummary"];
+    detail_q [label="Need thread\nor summary?", shape=diamond];
+    getThreads [label="getThreads /\ngetConversationSummary"];
 
-    start -> inbox_q;
-    inbox_q -> searchInboxes [label="yes"];
-    inbox_q -> keyword_q [label="no"];
-    searchInboxes -> keyword_q;
-    keyword_q -> comprehensive [label="yes"];
-    keyword_q -> listing_q [label="no"];
-    listing_q -> searchConv [label="yes"];
-    listing_q -> complex_q [label="no"];
-    complex_q -> advanced [label="yes"];
-    complex_q -> has_ids [label="no"];
-    has_ids -> structured [label="yes"];
-    has_ids -> thread_q [label="no"];
-    thread_q -> getThreads [label="yes"];
-    thread_q -> summary_q [label="no"];
-    summary_q -> getSummary [label="yes"];
+    start -> know_op;
+    know_op -> search_gw [label="no"];
+    know_op -> describe [label="yes"];
+    search_gw -> describe;
+    describe -> execute;
+    execute -> conv_q;
+    conv_q -> searchConv [label="yes"];
+    conv_q -> detail_q [label="no"];
+    detail_q -> getThreads [label="yes"];
 }
 ```
 
 ### Quick Decision Matrix
 
-| I want to... | Use this tool | Required first? |
-|--------------|---------------|-----------------|
-| Search by keywords | `comprehensiveConversationSearch` | `searchInboxes` if inbox mentioned |
-| List recent tickets (single status) | `searchConversations` | `searchInboxes` if inbox mentioned |
-| List recent tickets (ALL statuses) | `structuredConversationFilter(sortBy: "waitingSince", status: "all")` | `searchInboxes` if inbox mentioned |
-| Find tickets by email domain | `advancedConversationSearch` | `searchInboxes` if inbox mentioned |
-| Look up ticket #12345 | `structuredConversationFilter` | None |
-| Get all tickets from customer X | `structuredConversationFilter` | Need customer ID from prior search |
+All operations below run through `read_help_scout`. Call `describe_help_scout` first when unsure of arguments.
+
+| I want to... | Operation | Notes |
+|--------------|-----------|-------|
+| Search or list conversations (keywords, email, domain, tag, status, dates, ticket #) | `searchConversations` | The only conversation search; all statuses by default |
 | Read full conversation | `getThreads` | Need conversation ID |
+| Get raw conversation object | `getConversation` | Need conversation ID |
 | Get quick overview | `getConversationSummary` | Need conversation ID |
-| List all inboxes | `listAllInboxes` | None |
-| Get current server time | `getServerTime` | None |
-| Look up a customer by email | `searchCustomersByEmail` | None |
-| Browse customers | `listCustomers` | None |
-| Get full customer profile | `getCustomer` | Need customer ID |
-| Get customer contact details | `getCustomerContacts` | Need customer ID |
-| Browse organizations | `listOrganizations` | None |
-| Get organization details | `getOrganization` | Need organization ID |
-| See who is in an organization | `getOrganizationMembers` | Need organization ID |
-| See org's support history | `getOrganizationConversations` | Need organization ID |
-
----
-
-## Tool Reference Summary
-
-| Tool | Purpose | Key Limitation |
-|------|---------|----------------|
-| `searchInboxes` | Get inbox ID from name | ALWAYS call first when inbox mentioned |
-| `listAllInboxes` | List all available inboxes | Helper for discovery |
-| `searchConversations` | List tickets by time/status | **Defaults to ACTIVE ONLY** |
-| `comprehensiveConversationSearch` | Keyword search across statuses | Preferred for content search |
-| `advancedConversationSearch` | Complex filters (domain, tags) | For boolean logic |
-| `structuredConversationFilter` | ID-based lookup | Requires IDs from prior search |
-| `getConversationSummary` | Quick overview | Needs conversation ID |
-| `getThreads` | Full message history | Needs conversation ID |
-| `getServerTime` | Current timestamp | For time-relative searches |
-| `listCustomers` | Browse customers by name or query | Page-based v2 API |
-| `searchCustomersByEmail` | Find customer by email | Uses v3 API with cursor pagination |
-| `getCustomer` | Full customer profile with contacts | Includes embedded sub-resources |
-| `getCustomerContacts` | All contact channels for a customer | Parallel sub-resource lookups |
-| `listOrganizations` | Browse organizations | Sortable by activity, size, name |
-| `getOrganization` | Organization profile with counts | Optional customer/conversation counts |
-| `getOrganizationMembers` | Customers in an organization | 50 per page |
-| `getOrganizationConversations` | Support history for an organization | 50 per page |
+| Get current server time | `getServerTime` | Use for date-relative queries |
+| List inboxes | `listAllInboxes` | Usually unnecessary; IDs in server instructions |
+| Inbox custom fields, folders, routing | `getInbox` | `include: ["fields","folders","routing"]` |
+| Look up customer by email | `searchCustomersByEmail` | Exact match |
+| Browse customers | `listCustomers` | `useV3`/`cursor` for the v3 path |
+| Full customer profile | `getCustomer` | Need customer ID |
+| Customer contact channels (emails, phones, address, ...) | `getCustomerContacts` | Need customer ID |
+| Browse organizations | `listOrganizations` | Sortable by activity, size, name |
+| Organization details / members / history | `getOrganization`, `getOrganizationMembers`, `getOrganizationConversations` | Need organization ID |
+| Tags, users, teams | `listTags`, `listUsers`, `getUser`, `listTeams`, `getTeamMembers` | |
+| Saved replies | `listSavedReplies`, `getSavedReply` | |
+| Attachments and raw email source | `getAttachment`, `downloadAttachmentFile`, `getOriginalSource` | |
+| Workflows, webhooks, ratings | `listWorkflows`, `listWebhooks`, `getWebhook`, `getSatisfactionRating` | |
+| Reports | `getCompanyReport`, `getConversationsReport`, `getProductivityReport`, `getUserReport`, `getHappinessReport`, `getChannelReport`, `getDocsReport` | Plan-gated |
+| Docs knowledge base | `listDocsSites`, `searchDocsArticles`, `getDocsArticle`, and 12 more Docs operations | Use `search_help_scout("docs ...")` |
 
 See [references/tool-reference.md](references/tool-reference.md) for complete parameter documentation.
 
@@ -242,148 +202,81 @@ See [references/tool-reference.md](references/tool-reference.md) for complete pa
 **User:** "Search the support inbox for billing issues"
 
 **Steps:**
-1. Look up inbox ID:
+1. Get the Support inbox ID from the server instructions (no lookup call needed).
+2. Confirm the schema, then execute:
    ```
-   searchInboxes(query: "support")
-   ```
-   Result: `{ id: 359402, name: "Support" }`
-
-2. Search with inbox scope:
-   ```
-   comprehensiveConversationSearch(
-     searchTerms: ["billing"],
-     inboxId: "359402"
+   describe_help_scout(names: ["searchConversations"])
+   read_help_scout(
+     name: "searchConversations",
+     arguments: { contentTerms: ["billing"], inboxId: "359402" }
    )
    ```
+   Searches active + pending + closed by default.
 
 ### Workflow 2: Show Recent Tickets in Inbox X
 
 **User:** "Show me recent tickets in the sales inbox"
 
-**Steps:**
-1. Look up inbox ID:
-   ```
-   searchInboxes(query: "sales")
-   ```
-
-2. List recent (no keyword = use searchConversations):
-   ```
-   searchConversations(
-     inboxId: "359402",
-     sort: "createdAt",
-     order: "desc",
-     limit: 20
-   )
-   ```
+```
+read_help_scout(
+  name: "searchConversations",
+  arguments: { inboxId: "359402", sort: "createdAt", order: "desc", limit: 20 }
+)
+```
 
 ### Workflow 3: Find Ticket #12345
 
-**User:** "Show me ticket 12345"
-
-**Steps:**
-1. Direct lookup (no inbox lookup needed):
-   ```
-   structuredConversationFilter(conversationNumber: 12345)
-   ```
-
-2. Get details:
-   ```
-   getConversationSummary(conversationId: "<id from step 1>")
-   ```
+```
+read_help_scout(name: "searchConversations", arguments: { conversationNumber: 12345 })
+read_help_scout(name: "getConversationSummary", arguments: { conversationId: "<id from step 1>" })
+```
 
 ### Workflow 4: Find All Tickets from Domain
 
 **User:** "Find tickets from @acme.com"
 
-**Steps:**
-1. Use advanced search with domain filter:
-   ```
-   advancedConversationSearch(emailDomain: "acme.com")
-   ```
+```
+read_help_scout(name: "searchConversations", arguments: { emailDomain: "acme.com" })
+```
 
-### Workflow 5: List All Recent Tickets Across ALL Statuses
+### Workflow 5: Recent Tickets in a Date Window
 
-**User:** "Show me recent tickets from the last 30 days" (no specific status mentioned)
+**User:** "Show me tickets from the last 30 days"
 
-**Steps:**
-1. Use `structuredConversationFilter` with a unique `sortBy` value:
-   ```
-   structuredConversationFilter(
-     sortBy: "waitingSince",   // Required: unique sortBy enables all-status queries
-     status: "all",            // Includes active, pending, closed, spam
-     sortOrder: "desc",
-     limit: 50,
-     createdAfter: "2024-01-01T00:00:00Z"  // Optional: date filter
-   )
-   ```
-
-**Why this works:**
-- `structuredConversationFilter` supports `status: "all"` (unlike `searchConversations`)
-- BUT it requires at least one "unique field" - using `sortBy: "waitingSince"` satisfies this
-- Other unique sortBy values: `customerName`, `customerEmail`
-
-**Common mistake:** Using `searchConversations(status: "all")` - this FAILS because `searchConversations` only accepts specific statuses (active/pending/closed/spam), not "all".
-
----
+```
+read_help_scout(name: "getServerTime", arguments: {})
+read_help_scout(
+  name: "searchConversations",
+  arguments: { createdAfter: "<serverTime minus 30 days, ISO8601>", sort: "createdAt", order: "desc", limit: 50 }
+)
+```
 
 ### Workflow 6: Get Full Conversation Thread
 
-**User:** "Show me the full thread for conversation 12345678"
-
-**Steps:**
-1. Get all messages:
-   ```
-   getThreads(conversationId: "12345678", limit: 200)
-   ```
-
----
+```
+read_help_scout(name: "getThreads", arguments: { conversationId: "12345678", limit: 200 })
+```
 
 ### Workflow 7: Customer Investigation by Email
 
-**User:** "Look up the customer jane@acme.com and show their history"
+**User:** "Look up jane@acme.com and show their history"
 
-**Steps:**
-1. Find customer by email:
-   ```
-   searchCustomersByEmail(email: "jane@acme.com")
-   ```
-   Result: `{ id: 12345, firstName: "Jane", organizationId: 456 }`
-
-2. Get full profile:
-   ```
-   getCustomer(customerId: "12345")
-   ```
-
-3. Get their conversations:
-   ```
-   structuredConversationFilter(customerIds: [12345], status: "all", sortBy: "createdAt")
-   ```
+```
+read_help_scout(name: "searchCustomersByEmail", arguments: { email: "jane@acme.com" })
+read_help_scout(name: "getCustomer", arguments: { customerId: "12345" })
+read_help_scout(name: "searchConversations", arguments: { customerIds: [12345], sort: "createdAt", order: "desc" })
+```
 
 ### Workflow 8: Organization Account Review
 
 **User:** "Show me everything about the Acme Corp account"
 
-**Steps:**
-1. Find the organization:
-   ```
-   listOrganizations(sortField: "name")
-   ```
-   Find "Acme Corp" in results, get org ID.
-
-2. Get organization details:
-   ```
-   getOrganization(organizationId: "456", includeCounts: true)
-   ```
-
-3. See who is in the org:
-   ```
-   getOrganizationMembers(organizationId: "456")
-   ```
-
-4. See their support history:
-   ```
-   getOrganizationConversations(organizationId: "456")
-   ```
+```
+read_help_scout(name: "listOrganizations", arguments: { sortField: "name" })
+read_help_scout(name: "getOrganization", arguments: { organizationId: "456", includeCounts: true })
+read_help_scout(name: "getOrganizationMembers", arguments: { organizationId: "456" })
+read_help_scout(name: "getOrganizationConversations", arguments: { organizationId: "456" })
+```
 
 ---
 
@@ -391,13 +284,13 @@ See [references/tool-reference.md](references/tool-reference.md) for complete pa
 
 | Mistake | Why It Fails | Correct Approach |
 |---------|--------------|------------------|
-| `searchConversations(query: "billing")` without status | Returns active only, misses 80%+ of tickets | `comprehensiveConversationSearch(searchTerms: ["billing"])` |
-| `searchConversations(inboxId: "Support")` | Inbox ID must be numeric, not name | First: `searchInboxes(query: "Support")` |
-| `searchConversations(status: "all")` | "all" is NOT a valid status for this tool | Use `structuredConversationFilter(sortBy: "waitingSince", status: "all")` |
-| `structuredConversationFilter` as first search | Requires IDs you don't have yet | Start with `comprehensiveConversationSearch` |
-| `structuredConversationFilter` without unique field | Tool requires a unique field to work | Add `sortBy: "waitingSince"` or provide assignedTo/customerIds/conversationNumber |
-| Skipping `searchInboxes` when user mentions inbox | API requires numeric inbox ID | ALWAYS lookup first |
-| Using `searchConversations` for keyword search | Misses closed/pending tickets | Use `comprehensiveConversationSearch` |
+| Calling `mcp__helpscout__searchConversations` as an MCP tool | Only three tools are advertised | `read_help_scout(name: "searchConversations", ...)` |
+| Guessing arguments for `read_help_scout` | Schemas vary per operation | `describe_help_scout` first |
+| Calling `listAllInboxes` before every search | Inbox IDs are already in server instructions | Read the server instructions |
+| Passing an inbox name as `inboxId` | IDs are numeric strings, not names | Use the ID from server instructions |
+| Adding `status: "active"` to keyword searches "to be safe" | Default already covers active + pending + closed | Omit `status` unless narrowing on purpose |
+| Hardcoding "today" in date filters | Server clock may differ | `getServerTime` first |
+| Asking any operation to create or modify data | Every operation is read-only | Do it in the Help Scout UI |
 
 See [references/common-mistakes.md](references/common-mistakes.md) for more anti-patterns.
 
@@ -406,68 +299,51 @@ See [references/common-mistakes.md](references/common-mistakes.md) for more anti
 ## Quick Reference Card
 
 ```bash
-# STEP 1: Always get inbox ID first (when inbox mentioned)
-searchInboxes(query: "support")  # Returns inbox ID
+# STEP 1: Find operations by intent
+search_help_scout(query: "find tickets about billing")
 
-# STEP 2a: Keyword search (multi-status)
-comprehensiveConversationSearch(
-  searchTerms: ["billing", "refund"],
-  inboxId: "359402",
-  timeframeDays: 60
-)
+# STEP 2: Get exact schemas (up to 10 names)
+describe_help_scout(names: ["searchConversations", "getThreads"])
 
-# STEP 2b: List recent (single status)
-searchConversations(
-  inboxId: "359402",
-  status: "active",  # Required: active, pending, closed, or spam (NOT "all")
-  sort: "createdAt",
-  order: "desc"
-)
-
-# STEP 2c: List recent (ALL statuses)
-structuredConversationFilter(
-  sortBy: "waitingSince",  # Required: unique sortBy enables status: "all"
-  status: "all",
-  sortOrder: "desc",
-  limit: 50
-)
+# STEP 3: Execute (all searches default to active+pending+closed)
+read_help_scout(name: "searchConversations", arguments: {
+  contentTerms: ["billing", "refund"],
+  inboxId: "359402"           # from server instructions
+})
 
 # Direct ticket lookup
-structuredConversationFilter(conversationNumber: 12345)
+read_help_scout(name: "searchConversations", arguments: { conversationNumber: 12345 })
 
 # Email domain search
-advancedConversationSearch(emailDomain: "acme.com")
+read_help_scout(name: "searchConversations", arguments: { emailDomain: "acme.com" })
 
-# Full thread
-getThreads(conversationId: "12345678")
-
-# Quick summary
-getConversationSummary(conversationId: "12345678")
+# Full thread / quick summary
+read_help_scout(name: "getThreads", arguments: { conversationId: "12345678" })
+read_help_scout(name: "getConversationSummary", arguments: { conversationId: "12345678" })
 
 # Customer lookup
-searchCustomersByEmail(email: "jane@acme.com")
-getCustomer(customerId: "12345")
-getCustomerContacts(customerId: "12345")
+read_help_scout(name: "searchCustomersByEmail", arguments: { email: "jane@acme.com" })
+read_help_scout(name: "getCustomer", arguments: { customerId: "12345" })
+read_help_scout(name: "getCustomerContacts", arguments: { customerId: "12345" })
 
 # Organization traversal
-listOrganizations(sortField: "conversationCount", sortOrder: "desc")
-getOrganization(organizationId: "456", includeCounts: true)
-getOrganizationMembers(organizationId: "456")
-getOrganizationConversations(organizationId: "456")
+read_help_scout(name: "listOrganizations", arguments: { sortField: "conversationCount", sortOrder: "desc" })
+read_help_scout(name: "getOrganization", arguments: { organizationId: "456", includeCounts: true })
+read_help_scout(name: "getOrganizationMembers", arguments: { organizationId: "456" })
+read_help_scout(name: "getOrganizationConversations", arguments: { organizationId: "456" })
 ```
 
 ---
 
 ## Common Mistakes Checklist
 
-Before executing a HelpScout search, verify:
+Before executing a HelpScout operation, verify:
 
-- [ ] Did user mention an inbox name? → Called `searchInboxes` first?
-- [ ] Searching by keywords? → Using `comprehensiveConversationSearch` (not `searchConversations`)?
-- [ ] Need closed/pending tickets? → NOT using bare `searchConversations`?
-- [ ] Need ALL statuses? → Using `structuredConversationFilter(sortBy: "waitingSince", status: "all")` (NOT `searchConversations`)?
-- [ ] Using inbox ID, not inbox name, in API calls?
-- [ ] Using `structuredConversationFilter`? → Have unique field (conversationNumber, assignedTo, customerIds, folderId, or sortBy with waitingSince/customerName/customerEmail)?
-- [ ] Looking up a customer? → Using `searchCustomersByEmail` (not conversation search)?
-- [ ] Need customer's full profile? → Using `getCustomer` after finding ID?
-- [ ] Investigating an account? → Starting with `listOrganizations` or `getOrganization`?
+- [ ] Unsure which operation? → Called `search_help_scout` with the user's intent?
+- [ ] Know the operation? → Called `describe_help_scout` before building arguments?
+- [ ] Executing? → Using `read_help_scout(name, arguments)`, not the operation name as a tool?
+- [ ] Inbox mentioned? → Using the numeric ID from server instructions (no lookup call)?
+- [ ] Conversation search? → Using `searchConversations` (all statuses by default)?
+- [ ] Date-relative query ("last week", "today")? → Called `getServerTime` first?
+- [ ] Looking up a customer? → `searchCustomersByEmail`, not conversation search?
+- [ ] Investigating an account? → `listOrganizations` → `getOrganization` → `getOrganizationMembers`?

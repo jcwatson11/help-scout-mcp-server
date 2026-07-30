@@ -13,7 +13,7 @@ import { validateConfig } from './utils/config.js';
 import { logger } from './utils/logger.js';
 import { helpScoutClient, type PaginatedResponse } from './utils/helpscout-client.js';
 import { resourceHandler } from './resources/index.js';
-import { toolHandler } from './tools/index.js';
+import { gatewayHandler } from './tools/gateway.js';
 import { promptHandler } from './prompts/index.js';
 import type { Inbox } from './schema/types.js';
 import { createMcpResourceError } from './utils/mcp-errors.js';
@@ -38,7 +38,7 @@ export class HelpScoutMCPServer {
     this.server = new Server(
       {
         name: 'helpscout-search',
-        version: '1.7.0',
+        version: '2.0.0',
       },
       {
         capabilities: {
@@ -98,19 +98,24 @@ export class HelpScoutMCPServer {
 ## Available Inboxes (${inboxes.length} total)
 ${inboxes.length > 0 ? inboxList : '  No inboxes found - check API credentials'}
 
-## Tool Selection Guide
-| Task | Tool |
-|------|------|
-| Find tickets by keyword (billing, refund, bug) | comprehensiveConversationSearch |
+## How to Use This Server
+Three tools cover every read capability:
+1. **search_help_scout** - find operations by intent (e.g. "customer conversation history")
+2. **describe_help_scout** - load the full input schemas for the operations you selected
+3. **read_help_scout** - execute one operation: { "name": "<operation>", "arguments": { ... } }
+
+## Operation Selection Guide (execute via read_help_scout)
+| Task | Operation |
+|------|-----------|
+| Find tickets by keyword (billing, refund, bug) | searchConversations (contentTerms) |
 | List recent/filtered tickets | searchConversations |
-| Complex filters (email domain, multiple tags) | advancedConversationSearch |
-| Lookup by ticket number (#12345) | structuredConversationFilter |
+| Complex filters (email domain, customer IDs) | searchConversations (emailDomain/customerIds) |
+| Lookup by ticket number (#12345) | searchConversations (conversationNumber) |
 | Browse customers by name or query | listCustomers |
-| Browse customers with v3 cursor filters | listCustomersV3 |
+| Browse customers with v3 cursor/email/createdSince filters | listCustomers (useV3 or cursor) |
 | Find a customer by email | searchCustomersByEmail |
 | Get a full customer profile | getCustomer |
-| Get customer contact channels | getCustomerContacts |
-| Get one customer contact sub-resource | getCustomerAddress/listCustomerEmails/listCustomerPhones/listCustomerChats/listCustomerSocialProfiles/listCustomerWebsites |
+| Get customer contact channels (emails, phones, chats, social profiles, websites, address) | getCustomerContacts |
 | Browse organizations | listOrganizations |
 | Get an organization profile | getOrganization |
 | See everyone in an organization | getOrganizationMembers |
@@ -119,18 +124,19 @@ ${inboxes.length > 0 ? inboxList : '  No inboxes found - check API credentials'}
 | Get full conversation thread | getThreads |
 | Quick conversation preview | getConversationSummary |
 | Get inbox metadata | getInbox |
-| Inspect inbox routing state | getInboxRouting |
+| Inspect inbox custom fields, folders, or routing state | getInbox (include: ["fields","folders","routing"]) |
 
 ## Workflow Patterns
 - **Ticket investigation**: searchConversations → getConversation/getConversationSummary → getThreads
-- **Keyword research**: comprehensiveConversationSearch → getThreads for details
-- **Customer history**: listCustomersV3/searchCustomersByEmail → getCustomer → structuredConversationFilter/getThreads
+- **Keyword research**: searchConversations (contentTerms) → getThreads for details
+- **Customer history**: listCustomers/searchCustomersByEmail → getCustomer → searchConversations (customerIds)/getThreads
 - **Account review**: listOrganizations/getOrganization → getOrganizationMembers → getOrganizationConversations
 
 ## Notes
 - Always use inbox IDs from the list above (not names)
-- All search tools default to active+pending+closed statuses
-- Use getServerTime for date-relative queries`;
+- Search operations default to active+pending+closed statuses
+- Use getServerTime for date-relative queries
+- Everything is read-only; write operations are not available`;
 
       logger.info('Inbox discovery successful', { inboxCount: inboxes.length });
       return { instructions, inboxes };
@@ -146,7 +152,7 @@ ${inboxes.length > 0 ? inboxList : '  No inboxes found - check API credentials'}
       return {
         instructions: `Help Scout MCP Server - Read-only access to conversations.
 
-Note: Inbox auto-discovery failed (${safeError}). Use listAllInboxes tool to see available inboxes.`,
+Note: Inbox auto-discovery failed (${safeError}). Run the listAllInboxes operation via read_help_scout to see available inboxes.`,
         inboxes: [],
       };
     }
@@ -190,7 +196,7 @@ Note: Inbox auto-discovery failed (${safeError}). Use listAllInboxes tool to see
       logger.debug('Listing tools');
       try {
         return {
-          tools: await toolHandler.listTools(),
+          tools: await gatewayHandler.listTools(),
         };
       } catch (error) {
         logger.error('Error listing tools', { error: error instanceof Error ? error.message : String(error) });
@@ -219,7 +225,7 @@ Note: Inbox auto-discovery failed (${safeError}). Use listAllInboxes tool to see
           },
         }
         : request;
-      return await toolHandler.callTool(requestForTool);
+      return await gatewayHandler.callTool(requestForTool);
     });
 
     // Prompts
@@ -286,19 +292,33 @@ Note: Inbox auto-discovery failed (${safeError}). Use listAllInboxes tool to see
   }
 
   async stop(): Promise<void> {
+    // Attempt every cleanup step even when an earlier one fails, then
+    // surface the first failure so shutdown() can exit non-zero.
+    const failures: unknown[] = [];
+
     try {
-      // Close the MCP server
       await this.server.close();
-      
-      // Close HTTP connection pool
-      await helpScoutClient.closePool();
-      
-      logger.info('Help Scout MCP Server stopped');
     } catch (error) {
-      logger.error('Error stopping server', { 
-        error: error instanceof Error ? error.message : String(error) 
-      });
+      failures.push(error);
     }
+
+    try {
+      await helpScoutClient.closePool();
+    } catch (error) {
+      failures.push(error);
+    }
+
+    if (failures.length > 0) {
+      for (const failure of failures) {
+        logger.error('Error stopping server', {
+          error: failure instanceof Error ? failure.message : String(failure),
+        });
+      }
+      const first = failures[0];
+      throw first instanceof Error ? first : new Error(String(first));
+    }
+
+    logger.info('Help Scout MCP Server stopped');
   }
 }
 

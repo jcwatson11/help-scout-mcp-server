@@ -1,264 +1,108 @@
-# MCP Tool Surface Roadmap
+# MCP Tool Surface
 
-This roadmap sorts direct Help Scout API-parity MCP work by likely support-team
-usage. It is a product map, not a release plan; deferred ideas are called out
-separately so they are not mistaken for current build scope.
+This document defines the v2.0 tool-surface boundary: what the server advertises,
+what it can actually do, and what is deliberately left for later. It is a surface
+map, not a release plan.
+
+## The 2.0 Surface
+
+The server advertises exactly three MCP tools:
+
+- `search_help_scout` finds operations by user intent and returns matching
+  operation names and descriptions.
+- `describe_help_scout` returns full input schemas for named operations.
+- `read_help_scout` executes one named operation.
+
+Behind those three sits an internal registry of 55 read-only Help Scout
+operations covering conversations, customers, organizations, inboxes, tags,
+users, teams, saved replies, attachments, workflows, webhooks, satisfaction
+ratings, reports, and the Docs API. The gateway lives in `src/tools/gateway.ts`;
+the operation definitions and handlers stay in `src/tools/index.ts`.
+
+The registry is not a second advertised surface. Hosts discover operations
+through `search_help_scout`, load schemas through `describe_help_scout`, then
+execute through `read_help_scout`.
+
+## Compatibility
+
+Operation names currently in the registry still dispatch directly, so a client
+that calls `getConversation` by name keeps working. Names removed in the 2.0.0
+consolidation do not dispatch; they return an unknown-tool error pointing at
+`search_help_scout`. The full rule lives in
+[`guides/architecture/mcp-tool-contract.md`](../architecture/mcp-tool-contract.md).
+
+## What Was Consolidated
+
+Capabilities were folded into parent operations, not dropped.
+
+| Removed name | Now reachable through |
+| --- | --- |
+| `searchInboxes` | `listAllInboxes` with `nameContains` |
+| `advancedConversationSearch`, `comprehensiveConversationSearch`, `structuredConversationFilter` | `searchConversations` convenience filters |
+| `getConversationV3` | `getConversation` with `includeSystemActors` |
+| `getThreadsV3` | `getThreads` with `includeSystemActors` |
+| `getOriginalSourceRfc822` | `getOriginalSource` with `format: "rfc822"` |
+| `listCustomersV3` | `listCustomers` with `useV3` or a `cursor` |
+| `getCustomerAddress`, `listCustomerEmails`, `listCustomerPhones`, `listCustomerChats`, `listCustomerSocialProfiles`, `listCustomerWebsites` | `getCustomerContacts` |
+| `listSystemUsers` | `listUsers` with `includeSystemActors` |
+| `getSystemUser` | `getUser` with `includeSystemActors` |
+| `listUserStatuses` | `listUsers` with `includeStatuses` |
+| `getUserStatus` | `getUser` with `includeStatus` |
+| `listInboxCustomFields`, `listInboxFolders`, `getInboxRouting` | `getInbox` with `include: ["fields", "folders", "routing"]` |
+| `getDocsSiteRestrictions` | `getDocsSite` with `includeRestrictions` |
+| 32 individual report tools | 7 category operations: `getCompanyReport`, `getConversationsReport`, `getProductivityReport`, `getUserReport`, `getHappinessReport`, `getChannelReport`, `getDocsReport`, each selecting a sub-report through `report` or `channel` |
+
+Collection operations use page-number pagination. The one exception is the v3
+Customers path (`listCustomers` with `useV3` or a cursor, and
+`searchCustomersByEmail`), where cursor pagination is upstream Help Scout
+behavior rather than a server choice.
 
 ## Dogfood Fixture Rule
 
-Each direct API-surface PR must include or reuse idempotent dogfood seed data
-that exercises the core path and meaningful parameter permutations for that
-surface. If a live dogfood failure is caused by missing account data, fix the
+Each API-surface PR must include or reuse idempotent dogfood seed data that
+exercises the core path and meaningful parameter permutations for that
+operation. If a live dogfood failure is caused by missing account data, fix the
 fixture setup instead of weakening coverage.
 
 Use `npm run dogfood:seed` before authenticated dogfood runs. When a new API
-family needs data that the shared seed set cannot create, add the family-specific
-seed step and wire it into that command. Optional credential-gated seeders, such
-as Docs API fixtures, should no-op when their credentials are missing. Keep the
-detailed per-tool fixture map current in
+family needs data the shared seed set cannot create, add the family-specific seed
+step and wire it into that command. Optional credential-gated seeders, such as
+Docs API fixtures, should no-op when their credentials are missing. Keep the
+per-operation fixture map current in
 [`guides/testing/dogfood-fixture-matrix.md`](../testing/dogfood-fixture-matrix.md).
 
-## v1.9 Release Boundary
+## Future Work
 
-As of the June 16, 2026 reconciliation against the official Help Scout Mailbox
-and Docs endpoint maps, v1.9 targets current official read endpoint parity plus
-the write-tool foundation. `listCustomersV3` closes the remaining direct
-read-only endpoint gap for `GET /v3/customers`.
+### Write Operations
 
-Do not add write tools to v1.9. Write-capable API parity work starts after the
-write-tool contract in [`guides/architecture/mcp-tool-contract.md`](../architecture/mcp-tool-contract.md)
-is merged and dogfooded.
+Write operations are post-2.0. They require a stricter permission and
+confirmation model than reads. Satisfy the write-tool contract in
+[`guides/architecture/mcp-tool-contract.md`](../architecture/mcp-tool-contract.md)
+before implementing any mutation endpoint: classify the mutation, require
+confirmation metadata for destructive or externally visible actions, verify
+through MCP, and confirm cleanup.
 
-## 1. Core Support Loop
+Candidate families: draft reply creation, tagging and assignment, workflow
+execution, conversation status updates.
 
-These are the highest-usage tools because they map directly to daily support
-questions.
+A write surface must not be mixed into the read gateway without explicit naming,
+metadata, confirmation guidance, and coverage for denied or partial actions.
 
-Current:
+### Output Schemas
 
-- `searchConversations`
-- `advancedConversationSearch`
-- `comprehensiveConversationSearch`
-- `structuredConversationFilter`
-- `getConversation`
-- `getConversationV3`
-- `getConversationSummary`
-- `getThreads`
-- `getThreadsV3`
-- `getOriginalSource`
-- `getOriginalSourceRfc822`
-- `getAttachment`
-- `downloadAttachmentFile`
-- `searchInboxes`
-- `listAllInboxes`
-- `getInbox`
+Registry operations return `structuredContent` alongside serialized JSON text.
+Adding `outputSchema` per operation is still open work, sequenced in the rollout
+order at the end of the tool contract.
 
-Next:
-
-- Keep attachment data, file-download, and original-source fixtures readable in
-  the shared dogfood account.
-
-## 2. Customer And Account Context
-
-These tools answer who the customer is, what account they belong to, and what
-history matters before a reply.
-
-Current:
-
-- `listCustomers`
-- `listCustomersV3`
-- `getCustomer`
-- `searchCustomersByEmail`
-- `getCustomerContacts`
-- `getCustomerAddress`
-- `listCustomerEmails`
-- `listCustomerPhones`
-- `listCustomerChats`
-- `listCustomerSocialProfiles`
-- `listCustomerWebsites`
-- `listOrganizations`
-- `getOrganization`
-- `getOrganizationMembers`
-- `getOrganizationConversations`
-- `listCustomerProperties`
-- `listOrganizationProperties`
-- `getOrganizationProperty`
-
-Next:
-
-- Normalize structured output envelopes for customer and organization tools.
-- Add output schemas for stable profile, contact, property, and organization
-  response shapes.
-- Expand dogfood coverage for property-heavy accounts.
-
-## 3. Operator Metadata
-
-Metadata tools help AI hosts interpret how a Help Scout account is configured.
-They also reduce hallucinated IDs in later feature work.
-
-Current:
-
-- `listTags`
-- `getTag`
-- `listUsers`
-- `getUser`
-- `listSystemUsers`
-- `getSystemUser`
-- `listUserStatuses`
-- `getUserStatus`
-- `listTeams`
-- `getTeamMembers`
-- `listInboxCustomFields`
-- `listInboxFolders`
-- `getInboxRouting`
-- `listSavedReplies`
-- `getSavedReply`
-- `listWorkflows`
-
-Next:
-
-- Add stronger metadata result schemas.
-- Keep metadata tools read-only and browseable.
-
-## 4. Support Quality And Reporting
-
-These tools are less frequent than the core support loop, but important for
-managers and recurring analysis.
-
-Current:
-
-- `getSatisfactionRating`
-- `getCompanyReport`
-- `getCompanyCustomersHelpedReport`
-- `getCompanyDrilldownReport`
-- `getConversationsReport`
-- `getConversationVolumeByChannelReport`
-- `getConversationBusyTimesReport`
-- `getConversationDrilldownReport`
-- `getConversationFieldDrilldownReport`
-- `getConversationNewReport`
-- `getConversationNewDrilldownReport`
-- `getConversationReceivedMessagesReport`
-- `getDocsReport`
-- `getHappinessReport`
-- `getHappinessRatingsReport`
-- `getProductivityReport`
-- `getProductivityFirstResponseTimeReport`
-- `getProductivityRepliesSentReport`
-- `getProductivityResolutionTimeReport`
-- `getProductivityResolvedReport`
-- `getProductivityResponseTimeReport`
-- `getUserReport`
-- `getUserConversationHistoryReport`
-- `getUserCustomersHelpedReport`
-- `getUserDrilldownReport`
-- `getUserHappinessReport`
-- `getUserRatingsReport`
-- `getUserRepliesReport`
-- `getUserResolutionsReport`
-- `getUserChatReport`
-- `getChatReport`
-- `getEmailReport`
-- `getPhoneReport`
-
-Next:
-
-- Rating fixture coverage when the dogfood account has known rating data.
-- Seed reporting fixtures with assigned users, closed conversations, replies,
-  resolution history, and satisfaction ratings so report dogfood can assert
-  non-empty rows across company, conversation, productivity, happiness, and user
-  report families.
-- Guardrails to avoid large, slow account-wide report pulls by default.
-
-## 5. Docs API
-
-Docs API support should be its own namespace or clearly named tool family. It
-may require different Help Scout permissions and different user expectations
-than mailbox tools.
-
-Current:
-
-- `listDocsSites`
-- `getDocsSite`
-- `getDocsSiteRestrictions`
-- `listDocsCollections`
-- `getDocsCollection`
-- `listDocsCategories`
-- `getDocsCategory`
-- `listDocsArticles`
-- `searchDocsArticles`
-- `getDocsArticle`
-- `listDocsRelatedArticles`
-- `listDocsArticleRevisions`
-- `getDocsArticleRevision`
-- `listDocsRedirects`
-- `getDocsRedirect`
-- `findDocsRedirect`
-
-Next:
-
-- Add structured output schemas for Docs article, collection, category, and
-  redirect envelopes after the repository-wide MCP response-envelope work lands.
-- Use `tests/seed-docs-data.ts` to keep Docs dogfood seeded with Help
-  Scout-native article HTML derived from local source notes, plus revision and
-  redirect fixtures.
-
-## 6. Admin And Integration Metadata
-
-Admin and integration tools are useful but lower-frequency. They should remain
-read-only until a separate write boundary exists.
-
-Current:
-
-- `listWebhooks`
-- `getWebhook`
-
-Next:
-
-- Integration health metadata if available through supported APIs.
-
-## 7. Deferred MCP Apps Views
-
-MCP Apps views are future ideas, not current plan. Do not schedule these until
-the direct API-parity tool surface is complete. When they are revisited,
-interactive views should compose existing tool data rather than introduce a
-second data path.
-
-Candidate views:
-
-- Inbox command center.
-- Customer health dashboard.
-- Conversation review workspace.
-- Account context panel.
-
-The first MCP Apps work should prove that a view can reuse stable tool envelopes
-and dogfood fixtures without special casing the test account.
-
-## 8. Remote MCP And OAuth
+### Remote MCP And OAuth
 
 Remote MCP, OAuth, and Cloudflare deployment are platform work. They should not
-reshape the core stdio tool contract unless the stable MCP spec requires it.
+reshape the stdio gateway contract unless the stable MCP spec requires it. Open
+items: remote MCP OAuth research, Workers deployment design, and a clear
+separation between stdio environment credentials and HTTP authorization.
 
-Next:
+### Interactive Views
 
-- Remote MCP OAuth research.
-- Cloudflare Workers MCP deployment design.
-- Clear separation between stdio environment credentials and HTTP authorization.
-
-## 9. Write And Automation Tools
-
-Write tools are intentionally deferred. They require a stricter permission and
-confirmation model than read tools. Use the write-tool contract in
-[`guides/architecture/mcp-tool-contract.md`](../architecture/mcp-tool-contract.md)
-before implementing any mutation endpoint.
-
-Possible future families:
-
-- Draft reply creation.
-- Tagging or assignment.
-- Workflow execution.
-- Conversation status updates.
-
-Do not mix write tools into the read-only surface without explicit naming,
-metadata, user confirmation guidance, and test coverage for denied or partial
-actions.
+Interactive views are parked. If they are revisited, they should compose existing
+operation output rather than introduce a second data path, and they should reuse
+stable envelopes and dogfood fixtures without special-casing the test account.

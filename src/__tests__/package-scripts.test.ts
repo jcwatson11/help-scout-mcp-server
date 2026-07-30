@@ -31,6 +31,14 @@ describe('package scripts', () => {
     expect(result.stderr).toContain('skipping optional Docs fixture seed');
   });
 
+  it('keeps the default security script focused on branch-introduced findings', () => {
+    const packageJson = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8'));
+
+    expect(packageJson.scripts.security).toBe('npm run security:changed');
+    expect(packageJson.scripts['security:changed']).toContain('--baseline-commit origin/main');
+    expect(packageJson.scripts['security:full']).toBe('semgrep --config .semgrep.yml .');
+  });
+
   it('keeps operational scripts aligned with documented Help Scout credential names', () => {
     const credentialScripts = [
       'scripts/check-conversations.ts',
@@ -68,30 +76,6 @@ describe('package scripts', () => {
 
     expect(result.status).toBe(0);
     expect(result.stdout).toBe('env-app:env-secret');
-  });
-
-  it('guards sync:plugin when the target checkout has local files', () => {
-    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'helpscout-sync-plugin-'));
-    const pluginDir = path.join(tempRoot, 'helpscout-navigator');
-    fs.mkdirSync(pluginDir, { recursive: true });
-    fs.writeFileSync(path.join(pluginDir, 'local-change.txt'), 'do not delete');
-
-    try {
-      const result = spawnSync('node', ['scripts/sync-plugin.cjs'], {
-        cwd: process.cwd(),
-        env: {
-          ...process.env,
-          PLUGIN_SYNC_ROOT: tempRoot,
-        },
-        encoding: 'utf8',
-      });
-
-      expect(result.status).toBe(1);
-      expect(result.stderr).toContain('Refusing to replace');
-      expect(fs.existsSync(path.join(pluginDir, 'local-change.txt'))).toBe(true);
-    } finally {
-      fs.rmSync(tempRoot, { recursive: true, force: true });
-    }
   });
 
   it('fails version audit when any version source cannot be parsed', async () => {

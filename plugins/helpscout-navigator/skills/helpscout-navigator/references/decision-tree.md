@@ -1,6 +1,6 @@
-# HelpScout Tool Decision Tree
+# Help Scout Tool Decision Tree
 
-Expanded decision logic for complex search scenarios.
+Expanded decision logic for complex search scenarios. Every operation below is executed through the gateway: `search_help_scout` to find it, `describe_help_scout` for its schema, `read_help_scout` to run it. Examples show the `read_help_scout` call.
 
 ---
 
@@ -11,18 +11,16 @@ Expanded decision logic for complex search scenarios.
 **Approach:**
 ```javascript
 // Option A: Search without inbox filter (searches all)
-comprehensiveConversationSearch({
-  searchTerms: ["API", "api error", "integration"]
+read_help_scout({
+  name: "searchConversations",
+  arguments: { contentTerms: ["API", "api error", "integration"] }
 })
 
-// Option B: Get all inboxes and search each
-const inboxes = listAllInboxes();
-for (const inbox of inboxes) {
-  comprehensiveConversationSearch({
-    searchTerms: ["API"],
-    inboxId: inbox.id
-  });
-}
+// Option B: Search each inbox (IDs are in the server instructions)
+read_help_scout({
+  name: "searchConversations",
+  arguments: { contentTerms: ["API"], inboxId: "<each inbox ID>" }
+})
 ```
 
 **When to use Option B:**
@@ -32,78 +30,68 @@ for (const inbox of inboxes) {
 
 ---
 
-## Scenario 2: List All Recent Tickets (All Statuses)
+## Scenario 2: List Recent Tickets (All Statuses)
 
 **User:** "Show me recent tickets" (no specific status mentioned)
 
-**Key insight:** `searchConversations` does NOT support `status: "all"`. You must use `structuredConversationFilter`.
+**Key insight:** `searchConversations` searches active + pending + closed by default. No special incantation needed.
 
 **Approach:**
 ```javascript
-// CORRECT: Use structuredConversationFilter with unique sortBy
-structuredConversationFilter({
-  sortBy: "waitingSince",  // Required: unique sortBy enables status: "all"
-  status: "all",
-  sortOrder: "desc",
-  limit: 50,
-  createdAfter: "2024-01-01T00:00:00Z"  // Optional: date filter
+read_help_scout({
+  name: "searchConversations",
+  arguments: {
+    sort: "createdAt",
+    order: "desc",
+    limit: 50,
+    createdAfter: "2026-06-28T00:00:00Z"  // Optional: date filter
+  }
 })
 
-// WRONG: This will error!
-// searchConversations({ status: "all" })
-// Error: Invalid enum value. Expected 'active' | 'pending' | 'closed' | 'spam', received 'all'
+// To include spam too, pass status: "all"
 ```
-
-**Why unique sortBy is required:**
-The `structuredConversationFilter` tool requires at least one "unique field" to work. Using `sortBy: "waitingSince"` (or `customerName` or `customerEmail`) satisfies this requirement and allows `status: "all"`.
 
 ---
 
 ## Scenario 3: Date-Range Filtering
 
-**User:** "Find tickets from Q4 2023"
+**User:** "Find tickets from Q4 2025"
 
 **Approach:**
 ```javascript
-// For listing tickets by date range (single status)
-searchConversations({
-  createdAfter: "2023-10-01T00:00:00Z",
-  createdBefore: "2024-01-01T00:00:00Z",
-  status: "closed"  // Must specify: active, pending, closed, or spam (NOT "all")
+// Listing by date range (all statuses by default)
+read_help_scout({
+  name: "searchConversations",
+  arguments: {
+    createdAfter: "2025-10-01T00:00:00Z",
+    createdBefore: "2026-01-01T00:00:00Z"
+  }
 })
 
-// For listing tickets by date range (ALL statuses)
-structuredConversationFilter({
-  sortBy: "waitingSince",  // Required for status: "all"
-  status: "all",
-  createdAfter: "2023-10-01T00:00:00Z",
-  createdBefore: "2024-01-01T00:00:00Z"
-})
-
-// For finding tickets by keyword within date range
-comprehensiveConversationSearch({
-  searchTerms: ["billing", "refund"],
-  createdAfter: "2023-10-01T00:00:00Z",
-  createdBefore: "2024-01-01T00:00:00Z"
+// Keyword search within a date range
+read_help_scout({
+  name: "searchConversations",
+  arguments: {
+    contentTerms: ["billing", "refund"],
+    createdAfter: "2025-10-01T00:00:00Z",
+    createdBefore: "2026-01-01T00:00:00Z"
+  }
 })
 ```
 
-**For time-relative queries:**
+**For time-relative queries ("last 7 days"):**
 ```javascript
-// "Last 7 days" - listing without keywords
-searchConversations({
-  createdAfter: getServerTime() - 7 days,  // Calculate ISO date
-  status: "active"
-})
+// Step 1: Get the authoritative clock
+read_help_scout({ name: "getServerTime", arguments: {} })
 
-// "Last 7 days" - searching for keywords
-comprehensiveConversationSearch({
-  searchTerms: ["urgent"],
-  timeframeDays: 7
+// Step 2: Compute createdAfter from the response
+read_help_scout({
+  name: "searchConversations",
+  arguments: { createdAfter: "<serverTime minus 7 days, ISO8601>" }
 })
 ```
 
-**Note:** HelpScout API does not support wildcards. Use `searchConversations` for listing and `comprehensiveConversationSearch` for keyword search.
+**Note:** HelpScout search does not support wildcards. Use `contentTerms` variations instead.
 
 ---
 
@@ -113,28 +101,20 @@ comprehensiveConversationSearch({
 
 **Approach:**
 ```javascript
-// Step 1: Find customer using advanced search
-const results = advancedConversationSearch({
-  customerEmail: "customer@example.com"
-});
-
-// Step 2: Get customer ID from results
-const customerId = results[0].customer.id;
-
-// Step 3: Get full history with structuredConversationFilter
-structuredConversationFilter({
-  customerIds: [customerId],
-  sortBy: "createdAt",
-  sortOrder: "desc",
-  status: "all"
+// Direct: filter conversations by email
+read_help_scout({
+  name: "searchConversations",
+  arguments: { email: "customer@example.com", sort: "createdAt", order: "desc" }
 })
+
+// Or resolve the customer first for a richer profile
+read_help_scout({ name: "searchCustomersByEmail", arguments: { email: "customer@example.com" } })
+read_help_scout({ name: "searchConversations", arguments: { customerIds: [12345] } })
 ```
 
 **For domain-wide search:**
 ```javascript
-advancedConversationSearch({
-  emailDomain: "example.com"
-})
+read_help_scout({ name: "searchConversations", arguments: { emailDomain: "example.com" } })
 ```
 
 ---
@@ -145,23 +125,21 @@ advancedConversationSearch({
 
 **Approach:**
 ```javascript
-// Step 1: Need John's user ID
-// This typically comes from user list or prior conversation data
+// Step 1: Get John's user ID
+read_help_scout({ name: "listUsers", arguments: {} })
 
 // Step 2: Filter by assignee
-structuredConversationFilter({
-  assignedTo: 12345,  // John's user ID
-  status: "active",
-  sortBy: "waitingSince",  // Unique to this tool
-  sortOrder: "asc"  // Longest waiting first
+read_help_scout({
+  name: "searchConversations",
+  arguments: { assignedTo: 12345, status: "active", sort: "waitingSince", order: "asc" }
 })
 ```
 
 **For unassigned tickets:**
 ```javascript
-structuredConversationFilter({
-  assignedTo: -1,  // Special value for unassigned
-  status: "active"
+read_help_scout({
+  name: "searchConversations",
+  arguments: { assignedTo: -1, status: "active" }
 })
 ```
 
@@ -173,27 +151,20 @@ structuredConversationFilter({
 
 **Approach:**
 ```javascript
-// Option A: Using advancedConversationSearch (OR logic)
-advancedConversationSearch({
-  tags: ["urgent", "escalated"]  // OR combined
+// Comma-separated tags
+read_help_scout({
+  name: "searchConversations",
+  arguments: { tag: "urgent,escalated" }
 })
 
-// Option B: Multiple searches for AND logic
-const urgentResults = advancedConversationSearch({
-  tags: ["urgent"]
-});
-const escalatedResults = advancedConversationSearch({
-  tags: ["escalated"]
-});
-// Combine results
-```
-
-**For tag + content search:**
-```javascript
-advancedConversationSearch({
-  tags: ["urgent"],
-  contentTerms: ["billing", "payment"]
+// Tag + content search
+read_help_scout({
+  name: "searchConversations",
+  arguments: { tag: "urgent", contentTerms: ["billing", "payment"] }
 })
+
+// Browse available tags first if unsure of exact names
+read_help_scout({ name: "listTags", arguments: {} })
 ```
 
 ---
@@ -204,12 +175,16 @@ advancedConversationSearch({
 
 **Approach:**
 ```javascript
-// Note: Folder IDs are visible in HelpScout UI URL
-// e.g., helpscout.net/mailbox/12345/folder/67890
-structuredConversationFilter({
-  folderId: 67890,
-  sortBy: "modifiedAt",
-  sortOrder: "desc"
+// Step 1: Get folder IDs for the inbox
+read_help_scout({
+  name: "getInbox",
+  arguments: { inboxId: "359402", include: ["folders"] }
+})
+
+// Step 2: Filter by folder
+read_help_scout({
+  name: "searchConversations",
+  arguments: { folderId: 67890, sort: "modifiedAt", order: "desc" }
 })
 ```
 
@@ -222,16 +197,16 @@ structuredConversationFilter({
 **Approach:**
 ```javascript
 // Step 1: Get conversation by number
-const conv = structuredConversationFilter({
-  conversationNumber: 42839
-});
-const conversationId = conv[0].id;
+read_help_scout({ name: "searchConversations", arguments: { conversationNumber: 42839 } })
 
 // Step 2: Get summary (first + latest messages)
-getConversationSummary({ conversationId });
+read_help_scout({ name: "getConversationSummary", arguments: { conversationId: "<id>" } })
 
-// Step 3: Get full thread if needed
-getThreads({ conversationId, limit: 200 });
+// Step 3: Full thread if needed
+read_help_scout({ name: "getThreads", arguments: { conversationId: "<id>", limit: 200 } })
+
+// Step 4 (optional): raw email source or attachments
+read_help_scout({ name: "getOriginalSource", arguments: { conversationId: "<id>", threadId: "<threadId>" } })
 ```
 
 ---
@@ -243,12 +218,10 @@ getThreads({ conversationId, limit: 200 });
 **Approach:**
 ```javascript
 // Step 1: Get recently closed tickets
-const closed = searchConversations({
-  status: "closed",
-  sort: "updatedAt",  // Recently closed = recently updated
-  order: "desc",
-  limit: 100
-});
+read_help_scout({
+  name: "searchConversations",
+  arguments: { status: "closed", sort: "modifiedAt", order: "desc", limit: 100 }
+})
 
 // Step 2: Filter by duration (in your code)
 // Check createdAt vs closedAt difference
@@ -262,25 +235,24 @@ const closed = searchConversations({
 
 **Approach:**
 ```javascript
-// Step 1: Search by email (v3 API, exact match)
-searchCustomersByEmail({ email: "jane@acme.com" })
+// Step 1: Search by email (exact match)
+read_help_scout({ name: "searchCustomersByEmail", arguments: { email: "jane@acme.com" } })
 // Returns: [{ id: 12345, firstName: "Jane", lastName: "Doe", organizationId: 456 }]
 
-// Step 2: Get full profile with contacts
-getCustomer({ customerId: "12345" })
-// Returns: full profile with _embedded.emails, phones, chats, etc.
+// Step 2: Get full profile
+read_help_scout({ name: "getCustomer", arguments: { customerId: "12345" } })
 
-// Step 3 (optional): Get all contact channels
-getCustomerContacts({ customerId: "12345" })
+// Step 3 (optional): All contact channels
+read_help_scout({ name: "getCustomerContacts", arguments: { customerId: "12345" } })
 // Returns: emails, phones, chats, socialProfiles, websites, address
 ```
 
 **When to use `searchCustomersByEmail` vs `listCustomers`:**
-- `searchCustomersByEmail` - exact email match, v3 API, cursor pagination
-- `listCustomers` - name search, advanced query syntax, v2 API, page pagination
+- `searchCustomersByEmail`: exact email match
+- `listCustomers`: name search and query syntax; pass `useV3` (or a `cursor`) for cursor pagination plus `email`/`createdSince` filters
 
-**When NOT to use for customer lookup:**
-- Don't use `advancedConversationSearch(customerEmail: "...")` to find customers. That searches conversations, not the customer directory.
+**When NOT to use conversation search for customer lookup:**
+- `searchConversations({ email: "..." })` finds conversations, not the customer directory record.
 
 ---
 
@@ -291,24 +263,19 @@ getCustomerContacts({ customerId: "12345" })
 **Approach:**
 ```javascript
 // Step 1: Find the organization
-listOrganizations({ sortField: "name", sortOrder: "asc" })
-// Paginate if needed until you find "Acme Corp"
+read_help_scout({ name: "listOrganizations", arguments: { sortField: "name", sortOrder: "asc" } })
 
-// Step 2: Get organization details with counts
-getOrganization({ organizationId: "456", includeCounts: true })
-// Returns: name, domains, customerCount, conversationCount
+// Step 2: Details with counts
+read_help_scout({ name: "getOrganization", arguments: { organizationId: "456", includeCounts: true } })
 
-// Step 3: See who is in the org
-getOrganizationMembers({ organizationId: "456" })
-// Returns: all customers belonging to this org (50 per page)
+// Step 3: Who is in the org (50 per page)
+read_help_scout({ name: "getOrganizationMembers", arguments: { organizationId: "456" } })
 
-// Step 4: See their support history
-getOrganizationConversations({ organizationId: "456" })
-// Returns: all conversations for this org (50 per page)
+// Step 4: Support history (50 per page)
+read_help_scout({ name: "getOrganizationConversations", arguments: { organizationId: "456" } })
 
-// Step 5 (optional): Deep dive into a specific conversation
-getConversationSummary({ conversationId: "<id from step 4>" })
-getThreads({ conversationId: "<id from step 4>" })
+// Step 5 (optional): Deep dive into a conversation
+read_help_scout({ name: "getConversationSummary", arguments: { conversationId: "<id>" } })
 ```
 
 **Full traversal pattern:**
@@ -323,25 +290,42 @@ Organization -> Members -> Pick a member -> getCustomer -> Their conversations -
 **Approach:**
 ```javascript
 // Step 1: Look up the ticket
-structuredConversationFilter({ conversationNumber: 42839 })
-// Get the customer ID from the result
+read_help_scout({ name: "searchConversations", arguments: { conversationNumber: 42839 } })
 
-// Step 2: Get full customer profile
-getCustomer({ customerId: "<customer.id from step 1>" })
-// Returns: profile with organizationId, contact details
+// Step 2: Full customer profile
+read_help_scout({ name: "getCustomer", arguments: { customerId: "<customer.id from step 1>" } })
 
-// Step 3: Get all their conversations
-structuredConversationFilter({
-  customerIds: [<customer.id>],
-  status: "all",
-  sortBy: "createdAt",
-  sortOrder: "desc"
+// Step 3: All their conversations
+read_help_scout({
+  name: "searchConversations",
+  arguments: { customerIds: [12345], sort: "createdAt", order: "desc" }
 })
 
-// Step 4 (optional): See their org context
-getOrganization({ organizationId: "<from step 2>" })
-getOrganizationMembers({ organizationId: "<from step 2>" })
+// Step 4 (optional): Org context
+read_help_scout({ name: "getOrganization", arguments: { organizationId: "<from step 2>" } })
 ```
+
+---
+
+## Scenario 13: Metrics and Knowledge Base
+
+**User:** "How was support volume last month?" or "What do our docs say about X?"
+
+**Approach:**
+```javascript
+// Reports: getCompanyReport, getConversationsReport, getProductivityReport,
+// getUserReport, getHappinessReport, getChannelReport, getDocsReport
+read_help_scout({
+  name: "getConversationsReport",
+  arguments: { start: "2026-06-01T00:00:00Z", end: "2026-07-01T00:00:00Z" }
+})
+
+// Docs: searchDocsArticles for content, then getDocsArticle for the full text.
+// Browse with listDocsSites -> listDocsCollections -> listDocsArticles.
+read_help_scout({ name: "searchDocsArticles", arguments: { query: "SSO setup" } })
+```
+
+Unsure of names or arguments? `search_help_scout("happiness report")` then `describe_help_scout` on the match.
 
 ---
 
@@ -350,31 +334,25 @@ getOrganizationMembers({ organizationId: "<from step 2>" })
 ```
 START
   │
+  ├─ Unsure which operation exists?
+  │   └─ YES → search_help_scout(query: "<intent>"), then describe_help_scout()
+  │
   ├─ Do you know the exact ticket number?
-  │   └─ YES → structuredConversationFilter({ conversationNumber: X })
+  │   └─ YES → searchConversations({ conversationNumber: X })
   │
   ├─ Is the user asking about a specific inbox?
-  │   └─ YES → searchInboxes() FIRST, then continue
+  │   └─ YES → Use the inbox ID from server instructions (no lookup call)
   │
-  ├─ Are you searching by keywords/content?
-  │   └─ YES → comprehensiveConversationSearch()
-  │
-  ├─ Are you filtering by email domain or complex tags?
-  │   └─ YES → advancedConversationSearch()
-  │
-  ├─ Are you filtering by assignee, customer ID, or folder?
-  │   └─ YES → structuredConversationFilter() (need IDs first)
-  │
-  ├─ Listing tickets across ALL statuses?
-  │   └─ YES → structuredConversationFilter({ sortBy: "waitingSince", status: "all" })
-  │            (searchConversations does NOT support status: "all"!)
-  │
-  ├─ Just listing recent tickets by SINGLE status/time?
-  │   └─ YES → searchConversations() (status: active, pending, closed, OR spam)
+  ├─ Searching or listing conversations? (keywords, email, domain, tag,
+  │  status, dates, assignee, folder, customer)
+  │   └─ YES → searchConversations() with convenience filters
+  │            (defaults to active + pending + closed)
   │
   ├─ Need full conversation details?
   │   ├─ Quick overview → getConversationSummary()
-  │   └─ Full thread → getThreads()
+  │   ├─ Full thread → getThreads()
+  │   └─ Raw object / source / files → getConversation(), getOriginalSource(),
+  │        getAttachment(), downloadAttachmentFile()
   │
   ├─ Looking up a customer by email?
   │   └─ YES → searchCustomersByEmail()
@@ -385,7 +363,17 @@ START
   ├─ Investigating an organization/account?
   │   └─ YES → listOrganizations() → getOrganization() → getOrganizationMembers()
   │
-  └─ (end)
+  ├─ People, tags, or workspace metadata?
+  │   └─ YES → listUsers(), getUser(), listTeams(), getTeamMembers(), listTags(),
+  │            listSavedReplies(), getSavedReply(), listWorkflows(), listWebhooks()
+  │
+  ├─ Metrics or ratings?
+  │   └─ YES → get*Report operations, getSatisfactionRating()
+  │
+  ├─ Knowledge base?
+  │   └─ YES → searchDocsArticles(), getDocsArticle(), listDocsSites(), ...
+  │
+  └─ (end; every operation runs via read_help_scout, all read-only)
 ```
 
 ---
@@ -397,13 +385,13 @@ START
    - Widen search only if results are insufficient
 
 2. **Use pagination for large results**
-   - Always check for `nextCursor` in responses
+   - Walk `page` with a higher `limit` (max 200)
    - Process in batches for memory efficiency
 
-3. **Leverage includeVariations**
-   - Helps catch related terms automatically
-   - Reduces need for manual term expansion
+3. **Batch your describes**
+   - `describe_help_scout` accepts up to 10 names per call
+   - Describe the whole workflow's operations at once
 
-4. **Cache inbox IDs**
-   - Inbox IDs rarely change
-   - Store after first lookup to avoid repeated calls
+4. **Trust the defaults**
+   - `searchConversations` already covers active + pending + closed
+   - Inbox IDs are already in the server instructions

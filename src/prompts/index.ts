@@ -178,9 +178,12 @@ When a user mentions an inbox by name:
 **Approach**:
 \`\`\`
 // Check server instructions for inbox ID (e.g., "Support Inbox" → ID: 12345)
-comprehensiveConversationSearch({
-  searchTerms: ["urgent"],
-  inboxId: "12345"
+read_help_scout({
+  name: "searchConversations",
+  arguments: {
+    contentTerms: ["urgent"],
+    inboxId: "12345"
+  }
 })
 \`\`\`
 
@@ -192,8 +195,8 @@ comprehensiveConversationSearch({
 **Workflow**:
 1. Match inbox names from server instructions
 2. Run separate searches for each inbox:
-   - comprehensiveConversationSearch with support inbox ID
-   - comprehensiveConversationSearch with sales inbox ID
+   - searchConversations with support inbox ID
+   - searchConversations with sales inbox ID
 3. Combine and present results clearly
 
 ### Scenario 2: No Results Found
@@ -208,38 +211,33 @@ If a search returns no results:
 **User**: "Find all conversations about billing issues"
 
 **Workflow**:
-1. Use comprehensiveConversationSearch WITHOUT inboxId
+1. Use searchConversations WITHOUT inboxId
 2. This searches across ALL accessible inboxes
 3. Results will show which inbox each conversation belongs to
 
 ## Tool Selection Guide
 
-### Use \`comprehensiveConversationSearch\` when:
-- Searching by keywords in conversation content
-- User wants a broad search
-- Initial searches return no results
-- You need simple array input format
+\`searchConversations\` is the single conversation search tool. It handles
+keyword search, advanced filtering, and multi-status comprehensive search in
+one place.
 
-### Use \`searchConversations\` when:
-- You need HelpScout query syntax (body:, subject:, email:, etc.)
-- You need custom sorting or field selection
+### Use \`searchConversations\` for:
+- Keyword content search: \`contentTerms\` / \`subjectTerms\` (compiled into body:/subject: query syntax)
+- Email and domain filters: \`email\` / \`emailDomain\`
+- Customer, folder, assignee, and ticket-number lookups: \`customerIds\` / \`folderId\` / \`assignedTo\` / \`conversationNumber\`
+- Raw HelpScout query syntax via \`query\`, plus custom sorting and field selection
 - Simple listing without keywords
-
-### Use \`advancedConversationSearch\` when:
-- You need complex boolean logic
-- Searching by email domain
-- Combining multiple search criteria
 
 ## Status Handling
 
-Both \`searchConversations\` and \`comprehensiveConversationSearch\` now search all statuses (active, pending, closed) by default. You only need to specify a status if you want to filter to a specific one.
+\`searchConversations\` searches all statuses (active, pending, closed) by default. You only need to specify a status if you want to filter to a specific one.
 
 ## Common Pitfalls to Avoid
 
 1. **Use inbox IDs from server instructions** - Don't guess or hallucinate IDs
 2. **Ask for clarification** - If inbox name is ambiguous, ask user which one
-3. **Use the right tool** - comprehensiveConversationSearch for keywords, searchConversations for query syntax
-4. **Check your timeframes** - Default is 60 days; user might need longer
+3. **Use the convenience filters** - contentTerms/subjectTerms/email/customerIds compile into query syntax automatically
+4. **Check your timeframes** - Use createdAfter/createdBefore to bound results
 
 ## Multi-Inbox Reporting Pattern
 
@@ -248,7 +246,7 @@ When analyzing across multiple inboxes:
 1. Reference inbox list from server instructions
 2. For each inbox:
    - Use the inbox ID directly
-   - Run comprehensiveConversationSearch with that inboxId
+   - Run searchConversations with that inboxId
    - Collect results
 3. Present organized summary:
    - Group by inbox
@@ -262,7 +260,7 @@ When analyzing across multiple inboxes:
 - **Case doesn't matter**: Searches are case-insensitive
 - **Partial matches work**: "sup" will match "Support"
 - **Be specific with timeframes**: Use createdAfter/createdBefore for precision
-- **Combine search terms**: Use arrays in comprehensiveConversationSearch`;
+- **Combine search terms**: Use arrays in contentTerms/subjectTerms`;
 
     return {
       description: 'Essential workflow guide for using Help Scout MCP effectively',
@@ -297,12 +295,12 @@ When analyzing across multiple inboxes:
 
 1. First, get the current MCP host time:
    \`\`\`
-   Use the "getServerTime" tool to get the current MCP host timestamp
+   Run the "getServerTime" operation via read_help_scout to get the current MCP host timestamp
    \`\`\`
 
 2. Calculate the date 7 days ago from the current time.
 
-3. ${inboxId ? '' : 'IMPORTANT: If the user mentioned a specific inbox by name, use inbox IDs from the server instructions. If the list may be stale, call "listAllInboxes" to refresh available inbox IDs.\n\n4. '}Search for conversations using the "searchConversations" tool with these parameters:
+3. ${inboxId ? '' : 'IMPORTANT: If the user mentioned a specific inbox by name, use inbox IDs from the server instructions. If the list may be stale, run the "listAllInboxes" operation via read_help_scout to refresh available inbox IDs.\n\n4. '}Search for conversations by running the "searchConversations" operation via read_help_scout with these parameters:
    \`\`\`json
 ${this.formatJsonExample(searchParams)}
    \`\`\`
@@ -370,9 +368,9 @@ This will return conversations created in the last 7 days, sorted by creation da
 
     const prompt = `To find conversations with urgent or priority tags, follow these steps:
 
-1. Get current MCP host time using the "getServerTime" tool.
+1. Get current MCP host time by running the "getServerTime" operation via read_help_scout.
 
-2. ${inboxId ? '' : 'CRITICAL: If the user mentioned a specific inbox by name (e.g., "support inbox"), use inbox IDs from the server instructions. If the list may be stale, call "listAllInboxes" to refresh available inbox IDs.\n\n3. '}Search for conversations with urgent-related tags using the "searchConversations" tool.${timeFilter}
+2. ${inboxId ? '' : 'CRITICAL: If the user mentioned a specific inbox by name (e.g., "support inbox"), use inbox IDs from the server instructions. If the list may be stale, run the "listAllInboxes" operation via read_help_scout to refresh available inbox IDs.\n\n3. '}Search for conversations with urgent-related tags by running the "searchConversations" operation via read_help_scout.${timeFilter}
 
 ${inboxId ? '3' : '4'}. Perform multiple searches for different urgent tag variations:
    
@@ -439,14 +437,14 @@ Note: The exact tag names may vary by organization. Common urgent tag variations
 
     const prompt = `To show activity in inbox ${JSON.stringify(inboxId)} over the last ${hours} hours, follow these steps:
 
-1. Get current MCP host time using the "getServerTime" tool.
+1. Get current MCP host time by running the "getServerTime" operation via read_help_scout.
 
 2. Calculate the timestamp ${hours} hours ago from the current time.
    - Subtract ${hours} hours from the current timestamp
    - Example: If current time is "2025-06-11T15:04:00Z" and hours is ${hours},
      then ${hours} hours ago would be "${this.exampleHoursAgo(hours)}"
 
-3. Search for conversations in the specified inbox using the "searchConversations" tool:
+3. Search for conversations in the specified inbox by running the "searchConversations" operation via read_help_scout:
    \`\`\`json
 ${this.formatJsonExample(searchParams)}
    \`\`\`

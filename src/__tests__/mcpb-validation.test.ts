@@ -67,118 +67,25 @@ describeIfNotSkipped('MCPB Extension Validation', () => {
       expect(userConfig.personal_access_token).toBeUndefined();
     });
 
-    it('should have all 102 MCP tools declared', () => {
-      expect(manifest.tools).toHaveLength(102);
-
-      const expectedTools = [
-        'searchInboxes',
-        'searchConversations',
-        'getConversation',
-        'getConversationV3',
-        'getConversationSummary',
-        'getThreads',
-        'getThreadsV3',
-        'getServerTime',
-        'advancedConversationSearch',
-        'comprehensiveConversationSearch',
-        'listAllInboxes',
-        'getInbox',
-        'structuredConversationFilter',
-        'getCustomer',
-        'listCustomers',
-        'listCustomersV3',
-        'searchCustomersByEmail',
-        'getCustomerContacts',
-        'getCustomerAddress',
-        'listCustomerEmails',
-        'listCustomerPhones',
-        'listCustomerChats',
-        'listCustomerSocialProfiles',
-        'listCustomerWebsites',
-        'getOrganization',
-        'listOrganizations',
-        'getOrganizationMembers',
-        'getOrganizationConversations',
-        'listCustomerProperties',
-        'listOrganizationProperties',
-        'getOrganizationProperty',
-        'listTags',
-        'getTag',
-        'listUsers',
-        'getUser',
-        'listSystemUsers',
-        'getSystemUser',
-        'listUserStatuses',
-        'getUserStatus',
-        'listTeams',
-        'getTeamMembers',
-        'listInboxCustomFields',
-        'listInboxFolders',
-        'getInboxRouting',
-        'listSavedReplies',
-        'getSavedReply',
-        'getOriginalSource',
-        'getOriginalSourceRfc822',
-        'getAttachment',
-        'downloadAttachmentFile',
-        'listWorkflows',
-        'listWebhooks',
-        'getWebhook',
-        'getSatisfactionRating',
-        'getCompanyReport',
-        'getCompanyCustomersHelpedReport',
-        'getCompanyDrilldownReport',
-        'getConversationsReport',
-        'getConversationVolumeByChannelReport',
-        'getConversationBusyTimesReport',
-        'getConversationDrilldownReport',
-        'getConversationFieldDrilldownReport',
-        'getConversationNewReport',
-        'getConversationNewDrilldownReport',
-        'getConversationReceivedMessagesReport',
-        'getDocsReport',
-        'getHappinessReport',
-        'getHappinessRatingsReport',
-        'getProductivityReport',
-        'getProductivityFirstResponseTimeReport',
-        'getProductivityRepliesSentReport',
-        'getProductivityResolutionTimeReport',
-        'getProductivityResolvedReport',
-        'getProductivityResponseTimeReport',
-        'getUserReport',
-        'getUserConversationHistoryReport',
-        'getUserCustomersHelpedReport',
-        'getUserDrilldownReport',
-        'getUserHappinessReport',
-        'getUserRatingsReport',
-        'getUserRepliesReport',
-        'getUserResolutionsReport',
-        'getUserChatReport',
-        'getChatReport',
-        'getEmailReport',
-        'getPhoneReport',
-        'listDocsSites',
-        'getDocsSite',
-        'getDocsSiteRestrictions',
-        'listDocsCollections',
-        'getDocsCollection',
-        'listDocsCategories',
-        'getDocsCategory',
-        'listDocsArticles',
-        'searchDocsArticles',
-        'getDocsArticle',
-        'listDocsRelatedArticles',
-        'listDocsArticleRevisions',
-        'getDocsArticleRevision',
-        'listDocsRedirects',
-        'getDocsRedirect',
-        'findDocsRedirect'
-      ];
-
+    it('should declare exactly the three advertised gateway tools', () => {
       const toolNames = manifest.tools.map((tool: any) => tool.name);
-      expectedTools.forEach(toolName => {
-        expect(toolNames).toContain(toolName);
-      });
+      expect(toolNames).toEqual([
+        'search_help_scout',
+        'describe_help_scout',
+        'read_help_scout',
+      ]);
+
+      // The manifest advertises the static gateway surface, not runtime additions
+      expect(manifest.tools_generated).toBe(false);
+    });
+
+    it('should declare compatibility, support, and privacy policy metadata', () => {
+      expect(manifest.compatibility.claude_desktop).toBeDefined();
+      expect(manifest.compatibility.platforms).toEqual(['darwin', 'win32', 'linux']);
+      expect(manifest.compatibility.runtimes.node).toBe('>=18.0.0');
+      expect(manifest.support).toContain('github.com');
+      expect(Array.isArray(manifest.privacy_policies)).toBe(true);
+      expect(manifest.privacy_policies.length).toBeGreaterThan(0);
     });
 
     it('should not declare resources (resources are dynamic in MCP)', () => {
@@ -330,40 +237,24 @@ describeIfNotSkipped('MCPB Extension Validation', () => {
       const content = fs.readFileSync(toolsPath, 'utf8');
       
       const expectedExports = [
-        'searchInboxes',
         'searchConversations',
         'getConversation',
-        'getConversationV3',
-        'getConversationSummary', 
+        'getConversationSummary',
         'getThreads',
-        'getThreadsV3',
         'getServerTime',
-        'advancedConversationSearch',
-        'comprehensiveConversationSearch',
         'getInbox',
         'getCustomer',
         'listCustomers',
-        'listCustomersV3',
         'searchCustomersByEmail',
         'getCustomerContacts',
-        'getCustomerAddress',
-        'listCustomerEmails',
-        'listCustomerPhones',
-        'listCustomerChats',
-        'listCustomerSocialProfiles',
-        'listCustomerWebsites',
         'getOrganization',
         'listOrganizations',
         'getOrganizationMembers',
         'getOrganizationConversations',
-        'listSystemUsers',
-        'getSystemUser',
-        'listUserStatuses',
-        'getUserStatus',
-        'getInboxRouting',
-        'getOriginalSourceRfc822',
+        'listUsers',
+        'getUser',
         'downloadAttachmentFile',
-        'getDocsSiteRestrictions'
+        'getDocsSite'
       ];
 
       expectedExports.forEach(exportName => {

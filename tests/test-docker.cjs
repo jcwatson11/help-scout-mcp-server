@@ -221,10 +221,14 @@ class DockerLiveTester {
     });
     this.assertNoError(tools, 'tools/list');
     const toolNames = tools.result.tools.map(tool => tool.name);
-    for (const required of ['getServerTime', 'listAllInboxes', 'searchInboxes', 'listTags', 'listUsers', 'listInboxFolders', 'listCustomerProperties', 'listOrganizationProperties']) {
+    // v2.0.0 advertises exactly the three gateway tools
+    for (const required of ['search_help_scout', 'describe_help_scout', 'read_help_scout']) {
       if (!toolNames.includes(required)) {
         throw new Error(`Missing expected tool ${required}`);
       }
+    }
+    if (toolNames.length !== 3) {
+      throw new Error(`Expected exactly 3 advertised tools, got ${toolNames.length}: ${toolNames.join(', ')}`);
     }
     this.record('mcp tools/list', true, `${toolNames.length} tools`);
 
@@ -233,24 +237,37 @@ class DockerLiveTester {
       id: 3,
       method: 'tools/call',
       params: {
-        name: 'getServerTime',
-        arguments: {},
+        name: 'read_help_scout',
+        arguments: { name: 'getServerTime', arguments: {} },
       },
     });
-    this.assertNoError(serverTime, 'getServerTime');
-    this.record('mcp getServerTime', true);
+    this.assertNoError(serverTime, 'read_help_scout getServerTime');
+    this.record('mcp read_help_scout getServerTime', true);
 
-    const inboxes = await this.request({
+    // Legacy compatibility: current registry names still dispatch directly
+    const legacyServerTime = await this.request({
       jsonrpc: '2.0',
       id: 4,
       method: 'tools/call',
       params: {
-        name: 'searchInboxes',
-        arguments: { query: '' },
+        name: 'getServerTime',
+        arguments: {},
       },
     });
-    this.assertNoError(inboxes, 'searchInboxes');
-    this.record('mcp searchInboxes', true);
+    this.assertNoError(legacyServerTime, 'legacy getServerTime');
+    this.record('mcp legacy getServerTime', true);
+
+    const inboxes = await this.request({
+      jsonrpc: '2.0',
+      id: 5,
+      method: 'tools/call',
+      params: {
+        name: 'read_help_scout',
+        arguments: { name: 'listAllInboxes', arguments: {} },
+      },
+    });
+    this.assertNoError(inboxes, 'read_help_scout listAllInboxes');
+    this.record('mcp read_help_scout listAllInboxes', true);
   }
 
   async cleanup() {

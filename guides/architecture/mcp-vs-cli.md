@@ -9,13 +9,17 @@ trust.
 MCP tools are for AI hosts and support workflows. They should be typed,
 discoverable, read-only by default, and safe for model-controlled invocation.
 
+The shape of that surface, three advertised gateway tools over a registry of
+read-only operations, is defined in
+[`mcp-tool-contract.md`](./mcp-tool-contract.md). This document covers what
+belongs on the MCP side of the line, not how it is advertised.
+
 Use MCP tools for:
 
 - Searching conversations, customers, organizations, inboxes, and metadata.
 - Fetching full support context for a known Help Scout object.
 - Returning structured result data that hosts can validate and compose.
 - Exposing support workflows through prompts.
-- Supplying interactive MCP Apps views from existing tool data.
 
 MCP tools should not:
 
