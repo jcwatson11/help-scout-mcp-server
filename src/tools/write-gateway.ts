@@ -14,9 +14,10 @@ export interface WriteOperationRegistry {
 
 export const WRITE_TOOL_NAME = 'write_help_scout';
 
-// Writes mutate Help Scout state (and createReply emails the customer), so the
-// tool is explicitly NOT read-only. openWorldHint is true (external service).
-const WRITE_ANNOTATIONS = { readOnlyHint: false, destructiveHint: false, openWorldHint: true };
+// Writes mutate Help Scout state (createReply emails the customer,
+// deleteConversation removes it), so the tool is NOT read-only and CAN be
+// destructive. openWorldHint is true (external service).
+const WRITE_ANNOTATIONS = { readOnlyHint: false, destructiveHint: true, openWorldHint: true };
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);

@@ -624,6 +624,28 @@ export class HelpScoutClient {
     };
   }
 
+  async delete(endpoint: string): Promise<{ status: number }> {
+    // DELETE is idempotent (deleting an already-deleted resource just 404s), so
+    // retries are safe. Same validateStatus as patch: reject 429 so rate limits
+    // enter the retry/backoff path, accept other 4xx for buildApiErrorFromResponse.
+    const response = await this.executeWithRetry<void>(() =>
+      this.client.delete(endpoint, {
+        validateStatus: (status: number) => status < 429 || (status > 429 && status < 500),
+      })
+    );
+
+    if (response.status >= 400) {
+      throw this.buildApiErrorFromResponse(response);
+    }
+
+    // Invalidate read cache after successful write.
+    cache.clear();
+
+    return {
+      status: response.status,
+    };
+  }
+
   async patch(endpoint: string, data?: unknown): Promise<{ status: number }> {
     // PATCH for status/assignment updates is idempotent, so retries are safe.
     // Use validateStatus that rejects 429 so rate-limit responses enter the

@@ -4138,9 +4138,71 @@ describe('ToolHandler', () => {
         const textContent = result.content[0] as { type: 'text'; text: string };
         const response = JSON.parse(textContent.text);
         expect(response.success).toBe(true);
-        expect(response.conversationId).toBe('12345');
+        // conversationId must be numeric so it can be chained directly into
+        // createNote/createReply/etc. (which require a number).
+        expect(response.conversationId).toBe(12345);
         expect(response.subject).toBe('Test conversation');
         expect(response.customer).toBe('customer@example.com');
+      });
+
+      it('coerces a numeric-string conversationId (LLM clients often stringify ids)', async () => {
+        nock(baseURL)
+          .post('/conversations/456/notes')
+          .reply(201);
+
+        const request: CallToolRequest = {
+          method: 'tools/call',
+          params: {
+            name: 'createNote',
+            arguments: { conversationId: '456', text: 'note via string id' },
+          },
+        };
+
+        const result = await toolHandler.callTool(request);
+        const textContent = result.content[0] as { type: 'text'; text: string };
+        const response = JSON.parse(textContent.text);
+        expect(response.success).toBe(true);
+        expect(response.conversationId).toBe(456);
+      });
+
+      it('exposes deleteConversation as a write operation', () => {
+        const names = toolHandler.listWriteTools().map(t => t.name);
+        expect(names).toContain('deleteConversation');
+      });
+
+      it('deletes a conversation via DELETE', async () => {
+        nock(baseURL)
+          .delete('/conversations/789')
+          .reply(200);
+
+        const request: CallToolRequest = {
+          method: 'tools/call',
+          params: {
+            name: 'deleteConversation',
+            arguments: { conversationId: 789 },
+          },
+        };
+
+        const result = await toolHandler.callTool(request);
+        const textContent = result.content[0] as { type: 'text'; text: string };
+        const response = JSON.parse(textContent.text);
+        expect(response.success).toBe(true);
+        expect(response.conversationId).toBe(789);
+      });
+
+      it('refuses deleteConversation when writes are disabled', async () => {
+        process.env.HELPSCOUT_ENABLE_WRITES = 'false';
+        const request: CallToolRequest = {
+          method: 'tools/call',
+          params: {
+            name: 'deleteConversation',
+            arguments: { conversationId: 789 },
+          },
+        };
+
+        const result = await toolHandler.callTool(request);
+        expect(result.isError).toBe(true);
+        delete process.env.HELPSCOUT_ENABLE_WRITES;
       });
 
       it('should reject invalid input', async () => {

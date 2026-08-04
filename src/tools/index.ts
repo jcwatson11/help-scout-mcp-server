@@ -49,6 +49,7 @@ import {
   CreateNoteInputSchema,
   UpdateConversationStatusInputSchema,
   AssignConversationInputSchema,
+  DeleteConversationInputSchema,
   ListMailboxesInputSchema,
   ListCustomerPropertiesInputSchema,
   ListOrganizationPropertiesInputSchema,
@@ -1401,6 +1402,17 @@ export class ToolHandler {
           },
         },
         {
+          name: 'deleteConversation',
+          description: 'Delete a Help Scout conversation. Destructive: moves the conversation to the deleted state. Use for cleaning up test/duplicate tickets.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              conversationId: { type: 'number', description: 'Conversation ID to delete' },
+            },
+            required: ['conversationId'],
+          },
+        },
+        {
           name: 'listMailboxes',
           description: 'List Help Scout mailboxes with full details. Useful for finding mailbox IDs for conversation creation.',
           inputSchema: {
@@ -1509,6 +1521,9 @@ export class ToolHandler {
           break;
         case 'assignConversation':
           result = await this.assignConversation(request.params.arguments || {});
+          break;
+        case 'deleteConversation':
+          result = await this.deleteConversation(request.params.arguments || {});
           break;
         case 'listMailboxes':
           result = await this.listMailboxes(request.params.arguments || {});
@@ -3457,9 +3472,12 @@ export class ToolHandler {
 
     const response = await helpScoutClient.post('/conversations', body);
 
-    // Extract conversation ID from Location header
+    // Extract conversation ID from the Location header. Return it as a NUMBER so
+    // it can be chained straight into createReply/createNote/etc. (which require
+    // a numeric conversationId).
     const locationHeader = response.headers['location'] || response.headers['Location'] || '';
-    const conversationId = locationHeader.split('/').pop() || 'unknown';
+    const parsedId = Number(locationHeader.split('/').pop());
+    const conversationId = Number.isInteger(parsedId) && parsedId > 0 ? parsedId : null;
 
     return {
       content: [
@@ -3589,6 +3607,26 @@ export class ToolHandler {
             conversationId: input.conversationId,
             message: `Conversation assigned to user ${input.assignTo}`,
             assignedTo: input.assignTo,
+          }, null, 2),
+        },
+      ],
+    };
+  }
+
+  private async deleteConversation(args: unknown): Promise<CallToolResult> {
+    this.assertWritesEnabled('deleteConversation');
+    const input = DeleteConversationInputSchema.parse(args);
+
+    await helpScoutClient.delete(`/conversations/${input.conversationId}`);
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            success: true,
+            conversationId: input.conversationId,
+            message: `Conversation ${input.conversationId} deleted`,
           }, null, 2),
         },
       ],

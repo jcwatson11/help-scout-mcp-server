@@ -147,16 +147,16 @@ export const CreateConversationInputSchema = z.object({
     firstName: z.string().optional(),
     lastName: z.string().optional(),
   }),
-  mailboxId: z.number().int().positive('Mailbox ID must be a positive integer'),
+  mailboxId: z.coerce.number().int().positive('Mailbox ID must be a positive integer'),
   type: z.enum(['email', 'phone', 'chat']).default('email'),
   status: z.enum(['active', 'pending', 'closed']).default('active'),
   text: z.string().min(1, 'Message body text is required'),
   tags: z.array(z.string()).optional(),
-  assignTo: z.number().int().positive('Assignee user ID must be a positive integer').optional(),
+  assignTo: z.coerce.number().int().positive('Assignee user ID must be a positive integer').optional(),
 });
 
 export const CreateReplyInputSchema = z.object({
-  conversationId: z.number().int().positive('Conversation ID must be a positive integer'),
+  conversationId: z.coerce.number().int().positive('Conversation ID must be a positive integer'),
   customer: z.object({
     email: z.string().email('Valid customer email is required'),
   }).optional().describe('Customer to send the reply to. If omitted, sends to the conversation\'s primary customer.'),
@@ -165,18 +165,22 @@ export const CreateReplyInputSchema = z.object({
 });
 
 export const CreateNoteInputSchema = z.object({
-  conversationId: z.number().int().positive('Conversation ID must be a positive integer'),
+  conversationId: z.coerce.number().int().positive('Conversation ID must be a positive integer'),
   text: z.string().min(1, 'Note text is required'),
 });
 
 export const UpdateConversationStatusInputSchema = z.object({
-  conversationId: z.number().int().positive('Conversation ID must be a positive integer'),
+  conversationId: z.coerce.number().int().positive('Conversation ID must be a positive integer'),
   status: z.enum(['active', 'pending', 'closed']),
 });
 
 export const AssignConversationInputSchema = z.object({
-  conversationId: z.number().int().positive('Conversation ID must be a positive integer'),
-  assignTo: z.number().int().positive('User ID must be a positive integer'),
+  conversationId: z.coerce.number().int().positive('Conversation ID must be a positive integer'),
+  assignTo: z.coerce.number().int().positive('User ID must be a positive integer'),
+});
+
+export const DeleteConversationInputSchema = z.object({
+  conversationId: z.coerce.number().int().positive('Conversation ID must be a positive integer'),
 });
 
 // listUsers input/output (ListUsersInputSchema, UserSchema) is provided by the
@@ -1023,4 +1027,5 @@ export type CreateReplyInput = z.infer<typeof CreateReplyInputSchema>;
 export type CreateNoteInput = z.infer<typeof CreateNoteInputSchema>;
 export type UpdateConversationStatusInput = z.infer<typeof UpdateConversationStatusInputSchema>;
 export type AssignConversationInput = z.infer<typeof AssignConversationInputSchema>;
+export type DeleteConversationInput = z.infer<typeof DeleteConversationInputSchema>;
 export type ListMailboxesInput = z.infer<typeof ListMailboxesInputSchema>;

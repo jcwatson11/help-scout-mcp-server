@@ -636,6 +636,37 @@ describe('HelpScoutClient', () => {
     });
   });
 
+  describe('delete', () => {
+    beforeEach(() => {
+      process.env.HELPSCOUT_CLIENT_ID = 'test-client-id';
+      process.env.HELPSCOUT_CLIENT_SECRET = 'test-client-secret';
+      process.env.HELPSCOUT_BASE_URL = `${baseURL}/`;
+    });
+
+    function mockAuth() {
+      return nock(baseURL).post('/oauth2/token').reply(200, {
+        access_token: 'mock-access-token', token_type: 'Bearer', expires_in: 3600,
+      });
+    }
+
+    it('sends a DELETE request and returns the status', async () => {
+      mockAuth().delete('/conversations/789').reply(200);
+      const client = new HelpScoutClient();
+
+      const result = await (client as any).delete('/conversations/789');
+      expect(result.status).toBe(200);
+    });
+
+    it('throws a structured ApiError on a 404', async () => {
+      mockAuth().delete('/conversations/404').reply(404, { message: 'Not found' });
+      const client = new HelpScoutClient();
+
+      await expect((client as any).delete('/conversations/404')).rejects.toMatchObject({
+        code: 'NOT_FOUND',
+      });
+    });
+  });
+
   describe('patch validateStatus', () => {
     it('should configure validateStatus to reject 429 for rate-limit retries', () => {
       const client = new HelpScoutClient();
